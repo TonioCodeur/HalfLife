@@ -110,6 +110,28 @@ function computeDecay(m: Measurement, now: number): DecayResult {
   return { remaining, cumulative, fraction, halfLivesSinceStart };
 }
 
+/**
+ * Concentration sanguine au moment exact de la dernière dose.
+ * Sert de nouveau "100 %" : à chaque ajout de dose, le taux affiché
+ * est réinitialisé à 100 % et le compteur de demi-vies repart de zéro.
+ */
+function computePeakAtLastDose(m: Measurement): BigNumber {
+  const halfLifeMs = math
+    .bignumber(m.halfLife)
+    .times(math.bignumber(UNIT_MS[m.unit]));
+  const lastTakenAt = m.doses[m.doses.length - 1].takenAt;
+
+  let peak = BN_ZERO;
+  for (const d of m.doses) {
+    const elapsed = math.bignumber(lastTakenAt - d.takenAt);
+    const halfLives = elapsed.div(halfLifeMs);
+    const fraction = math.pow(BN_HALF, halfLives) as BigNumber;
+    const amount = math.bignumber(d.amount);
+    peak = math.add(peak, math.multiply(amount, fraction)) as BigNumber;
+  }
+  return peak;
+}
+
 function isMeasurementFinished(m: Measurement, now: number): boolean {
   return computeDecay(m, now).fraction.lt(ELIMINATION_THRESHOLD);
 }
@@ -476,16 +498,32 @@ function MeasurementRow({
 
   const now = Date.now();
   const startedAt = m.doses[0].takenAt;
+  const lastDoseTakenAt = m.doses[m.doses.length - 1].takenAt;
   const decay = computeDecay(m, now);
 
   // Sous le seuil d'élimination → on fige sur 0 (au lieu d'afficher 1e-15 mg)
   const finished = decay.fraction.lt(ELIMINATION_THRESHOLD);
   const remainingDose = finished ? 0 : decay.remaining.toNumber();
   const cumulativeDose = decay.cumulative.toNumber();
+
+  // Référence "100 %" = concentration au moment de la dernière prise.
+  // → après chaque ajout de dose, le taux affiché remonte à 100 %.
+  const peakAtLastDose = computePeakAtLastDose(m);
+  const displayFraction = peakAtLastDose.gt(0)
+    ? decay.remaining.div(peakAtLastDose)
+    : BN_ZERO;
   const remainingPct = finished
     ? 0
-    : (decay.fraction.times(BN_HUNDRED) as BigNumber).toNumber();
-  const halfLivesSinceStart = decay.halfLivesSinceStart.toNumber();
+    : (displayFraction.times(BN_HUNDRED) as BigNumber).toNumber();
+
+  // Demi-vies écoulées depuis la dernière dose (repart de 0 à chaque ajout).
+  const halfLifeMsBN = math
+    .bignumber(m.halfLife)
+    .times(math.bignumber(UNIT_MS[m.unit]));
+  const halfLivesSinceLastDose = math
+    .bignumber(now - lastDoseTakenAt)
+    .div(halfLifeMsBN)
+    .toNumber();
 
   // Couleur du glow : éteint quand terminé, sinon pink → purple → cyan
   const glowColor = finished
@@ -602,6 +640,11 @@ function MeasurementRow({
           <div>
             <p className="font-mono text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">
               Demi-vies écoulées
+              {m.doses.length > 1 && (
+                <span className="ml-1 normal-case tracking-normal text-[0.6rem] text-[var(--neon-purple)]">
+                  (depuis dernière dose)
+                </span>
+              )}
             </p>
             <p
               className="mt-1 font-mono text-3xl font-bold tabular-nums sm:text-4xl"
@@ -611,7 +654,7 @@ function MeasurementRow({
                   "0 0 8px color-mix(in oklch, var(--neon-cyan), transparent 30%), 0 0 22px color-mix(in oklch, var(--neon-cyan), transparent 55%)",
               }}
             >
-              {halfLivesSinceStart.toFixed(2)}
+              {halfLivesSinceLastDose.toFixed(2)}
               <span className="ml-1 text-lg text-muted-foreground">× t½</span>
             </p>
           </div>
