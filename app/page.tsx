@@ -48,6 +48,24 @@ type Measurement = {
   doses: Dose[]; // au moins une dose ; doses[0] = dose initiale
 };
 
+/** Seuil d'élimination — sous 1 ppm de la dose cumulée la mesure est figée à 0. */
+const ELIMINATION_THRESHOLD = 1e-6;
+
+function computeRemainingFraction(m: Measurement, now: number): number {
+  const halfLifeMs = m.halfLife * UNIT_MS[m.unit];
+  const cumulative = m.doses.reduce((s, d) => s + d.amount, 0);
+  if (cumulative <= 0) return 0;
+  const remaining = m.doses.reduce((sum, d) => {
+    const halfLives = (now - d.takenAt) / halfLifeMs;
+    return sum + d.amount * Math.pow(0.5, halfLives);
+  }, 0);
+  return remaining / cumulative;
+}
+
+function isMeasurementFinished(m: Measurement, now: number): boolean {
+  return computeRemainingFraction(m, now) < ELIMINATION_THRESHOLD;
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [halfLife, setHalfLife] = useState("");
@@ -62,12 +80,17 @@ export default function Home() {
   const halfId = useId();
   const doseId = useId();
 
-  // Tick d'une seconde — pilote la décroissance affichée
+  // Tick d'une seconde — pilote la décroissance affichée.
+  // S'arrête dès que toutes les mesures sont éliminées (et redémarre si
+  // l'utilisateur ajoute une dose qui ranime une mesure terminée).
+  const anyActive = measurements.some(
+    (m) => !isMeasurementFinished(m, Date.now()),
+  );
   useEffect(() => {
-    if (measurements.length === 0) return;
+    if (!anyActive) return;
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, [measurements.length]);
+  }, [anyActive]);
 
   function add(e: React.FormEvent) {
     e.preventDefault();
@@ -366,16 +389,23 @@ function MeasurementRow({
   const halfLivesSinceStart = (now - startedAt) / halfLifeMs;
 
   // Somme : chaque dose décroît indépendamment depuis sa propre prise
-  const remainingDose = m.doses.reduce((sum, d) => {
+  const rawRemainingDose = m.doses.reduce((sum, d) => {
     const halfLives = (now - d.takenAt) / halfLifeMs;
     return sum + d.amount * Math.pow(0.5, halfLives);
   }, 0);
   const cumulativeDose = m.doses.reduce((sum, d) => sum + d.amount, 0);
-  const remainingPct = (remainingDose / cumulativeDose) * 100;
+  const rawFraction =
+    cumulativeDose > 0 ? rawRemainingDose / cumulativeDose : 0;
 
-  // Couleur du glow selon le taux restant : pink (haut) → purple (mid) → cyan (bas)
-  const glowColor =
-    remainingPct > 50
+  // Sous le seuil d'élimination → on fige sur 0 (au lieu d'afficher 1e-15 mg)
+  const finished = rawFraction < ELIMINATION_THRESHOLD;
+  const remainingDose = finished ? 0 : rawRemainingDose;
+  const remainingPct = finished ? 0 : rawFraction * 100;
+
+  // Couleur du glow : éteint quand terminé, sinon pink → purple → cyan
+  const glowColor = finished
+    ? "var(--neon-cyan)"
+    : remainingPct > 50
       ? "var(--neon-pink)"
       : remainingPct > 12.5
         ? "var(--neon-purple)"
@@ -395,22 +425,38 @@ function MeasurementRow({
 
   return (
     <li
-      className="group relative overflow-hidden rounded-md border border-[var(--neon-pink)]/30 bg-card/70 backdrop-blur-sm transition-shadow"
+      className={
+        "group relative overflow-hidden rounded-md border bg-card/70 backdrop-blur-sm transition-shadow " +
+        (finished
+          ? "border-[var(--neon-cyan)]/20 opacity-80"
+          : "border-[var(--neon-pink)]/30")
+      }
       style={{
-        boxShadow: `0 0 20px color-mix(in oklch, ${glowColor}, transparent 75%)`,
+        boxShadow: finished
+          ? "0 0 12px color-mix(in oklch, var(--neon-cyan), transparent 85%)"
+          : `0 0 20px color-mix(in oklch, ${glowColor}, transparent 75%)`,
       }}
     >
-      {/* En-tête : nom + bouton supprimer */}
+      {/* En-tête : nom + badge éliminé + bouton supprimer */}
       <div className="flex items-center justify-between gap-3 border-b border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/60%] px-5 py-3">
         <div className="min-w-0 flex-1">
-          <h3
-            className="truncate font-heading text-xl font-bold uppercase tracking-wide text-[var(--neon-white)]"
-            style={{
-              textShadow: `0 0 8px color-mix(in oklch, ${glowColor}, transparent 35%), 0 0 18px color-mix(in oklch, ${glowColor}, transparent 60%)`,
-            }}
-          >
-            {m.name}
-          </h3>
+          <div className="flex items-center gap-2">
+            <h3
+              className="truncate font-heading text-xl font-bold uppercase tracking-wide text-[var(--neon-white)]"
+              style={{
+                textShadow: finished
+                  ? "none"
+                  : `0 0 8px color-mix(in oklch, ${glowColor}, transparent 35%), 0 0 18px color-mix(in oklch, ${glowColor}, transparent 60%)`,
+              }}
+            >
+              {m.name}
+            </h3>
+            {finished && (
+              <span className="shrink-0 rounded-sm border border-[var(--neon-cyan)]/60 bg-[color-mix(in_oklch,var(--neon-cyan),transparent_85%)] px-2 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.25em] text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_40%)]">
+                ◉ éliminé
+              </span>
+            )}
+          </div>
           <p className="mt-0.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
             t½ = {m.halfLife} {UNIT_LABEL[m.unit]} · {m.doses.length} prise
             {m.doses.length > 1 ? "s" : ""} · cumul ={" "}
