@@ -1,26 +1,225 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-neon-pink: var(--neon-pink);
+  --color-neon-purple: var(--neon-purple);
+  --color-neon-cyan: var(--neon-cyan);
+  --color-neon-lime: var(--neon-lime);
+  --color-neon-yellow: var(--neon-yellow);
+  --color-neon-white: var(--neon-white);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-geist-sans);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ──────────────────────────────────────────────────────────────────────────
+   CYBERPUNK NÉON — palette fluo violet sur fond quasi noir.
+   Les couleurs néon sont en oklch très saturé pour un rendu
+   "glow" maximal. Le texte courant garde un contraste WCAG AA.
+   ────────────────────────────────────────────────────────────────────── */
+:root {
+  --background: oklch(0.10 0.04 295);          /* noir-violet */
+  --foreground: oklch(0.97 0.02 320);          /* blanc rose-violet */
+
+  --card: oklch(0.14 0.05 295);                /* carte légèrement plus claire */
+  --card-foreground: oklch(0.97 0.02 320);
+
+  --popover: oklch(0.12 0.05 295);
+  --popover-foreground: oklch(0.97 0.02 320);
+
+  /* Primary = rose néon (hot pink / magenta saturé) */
+  --primary: oklch(0.70 0.30 340);
+  --primary-foreground: oklch(0.10 0.04 295);
+
+  --secondary: oklch(0.20 0.07 295);
+  --secondary-foreground: oklch(0.97 0.02 320);
+
+  --muted: oklch(0.18 0.05 295);
+  --muted-foreground: oklch(0.80 0.05 310);
+
+  --accent: oklch(0.65 0.28 290);              /* violet néon */
+  --accent-foreground: oklch(0.10 0.04 295);
+
+  --destructive: oklch(0.65 0.30 25);
+
+  --border: oklch(0.65 0.20 320 / 35%);
+  --input: oklch(0.20 0.06 295 / 70%);
+  --ring: oklch(0.78 0.25 340);                /* anneau focus rose néon */
+
+  /* Palette néon dédiée — utilisée par les variantes de bouton */
+  --neon-pink: oklch(0.72 0.32 340);
+  --neon-purple: oklch(0.62 0.30 290);
+  --neon-cyan: oklch(0.85 0.22 195);
+  --neon-lime: oklch(0.88 0.27 140);
+  --neon-yellow: oklch(0.92 0.22 100);
+  --neon-white: oklch(0.99 0 0);
+
+  --chart-1: oklch(0.72 0.32 340);
+  --chart-2: oklch(0.62 0.30 290);
+  --chart-3: oklch(0.85 0.22 195);
+  --chart-4: oklch(0.88 0.27 140);
+  --chart-5: oklch(0.92 0.22 100);
+
+  --sidebar: oklch(0.12 0.05 295);
+  --sidebar-foreground: oklch(0.97 0.02 320);
+  --sidebar-primary: oklch(0.70 0.30 340);
+  --sidebar-primary-foreground: oklch(0.10 0.04 295);
+  --sidebar-accent: oklch(0.20 0.07 295);
+  --sidebar-accent-foreground: oklch(0.97 0.02 320);
+  --sidebar-border: oklch(0.55 0.18 320 / 35%);
+  --sidebar-ring: oklch(0.78 0.25 340);
+
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  body {
+    color: var(--foreground);
+    background-color: var(--background);
+    /* Halos néon + grille cyberpunk sur fond noir-violet */
+    background-image:
+      radial-gradient(
+        ellipse 60% 50% at 15% 0%,
+        oklch(0.30 0.20 340 / 0.45) 0%,
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 50% 60% at 85% 100%,
+        oklch(0.30 0.22 290 / 0.45) 0%,
+        transparent 60%
+      ),
+      linear-gradient(
+        oklch(0.65 0.20 320 / 0.05) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        90deg,
+        oklch(0.65 0.20 320 / 0.05) 1px,
+        transparent 1px
+      );
+    background-size:
+      100% 100%,
+      100% 100%,
+      40px 40px,
+      40px 40px;
+    background-attachment: fixed;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+  }
+
+  ::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ──────────────────────────────────────────────────────────────────────────
+   Utilitaires néon — glow réutilisable.
+   ────────────────────────────────────────────────────────────────────── */
+@utility neon-text-pink {
+  color: var(--neon-pink);
+  text-shadow:
+    0 0 6px oklch(from var(--neon-pink) l c h / 0.9),
+    0 0 14px oklch(from var(--neon-pink) l c h / 0.6),
+    0 0 28px oklch(from var(--neon-pink) l c h / 0.4);
+}
+
+@utility neon-text-cyan {
+  color: var(--neon-cyan);
+  text-shadow:
+    0 0 6px oklch(from var(--neon-cyan) l c h / 0.9),
+    0 0 14px oklch(from var(--neon-cyan) l c h / 0.6),
+    0 0 28px oklch(from var(--neon-cyan) l c h / 0.4);
+}
+
+@utility neon-text-purple {
+  color: var(--neon-purple);
+  text-shadow:
+    0 0 6px oklch(from var(--neon-purple) l c h / 0.9),
+    0 0 14px oklch(from var(--neon-purple) l c h / 0.6),
+    0 0 28px oklch(from var(--neon-purple) l c h / 0.4);
+}
+
+@utility neon-text-white {
+  color: var(--neon-white);
+  text-shadow:
+    0 0 6px oklch(from var(--neon-pink) l c h / 0.85),
+    0 0 16px oklch(from var(--neon-pink) l c h / 0.55),
+    0 0 32px oklch(from var(--neon-purple) l c h / 0.45);
+}
+
+@keyframes neon-flicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% {
+    opacity: 1;
+  }
+  20%, 24%, 55% {
+    opacity: 0.6;
+  }
+}
+
+@utility neon-flicker {
+  animation: neon-flicker 4s infinite alternate;
 }
