@@ -66,9 +66,40 @@ type Measurement = {
 /** Seuil d'élimination — sous 1 ppm de la dose cumulée la mesure est figée à 0. */
 const ELIMINATION_THRESHOLD = math.bignumber("1e-6");
 
-/** Clé localStorage pour l'historique des molécules saisies. */
+/** Clés localStorage. */
 const NAME_HISTORY_KEY = "halflife.molecule-history.v1";
 const NAME_HISTORY_MAX = 30;
+const MEASUREMENTS_KEY = "halflife.measurements.v1";
+
+/** Garde-fou : valide la forme d'une mesure désérialisée depuis localStorage. */
+function isValidMeasurement(x: unknown): x is Measurement {
+  if (!x || typeof x !== "object") return false;
+  const m = x as Record<string, unknown>;
+  if (
+    typeof m.id !== "string" ||
+    typeof m.name !== "string" ||
+    typeof m.halfLife !== "number" ||
+    !Number.isFinite(m.halfLife) ||
+    m.halfLife <= 0 ||
+    (m.unit !== "s" && m.unit !== "min" && m.unit !== "h") ||
+    (m.massUnit !== "ug" && m.massUnit !== "mg" && m.massUnit !== "g") ||
+    !Array.isArray(m.doses) ||
+    m.doses.length === 0
+  ) {
+    return false;
+  }
+  return m.doses.every((d) => {
+    if (!d || typeof d !== "object") return false;
+    const dose = d as Record<string, unknown>;
+    return (
+      typeof dose.amount === "number" &&
+      Number.isFinite(dose.amount) &&
+      dose.amount > 0 &&
+      typeof dose.takenAt === "number" &&
+      Number.isFinite(dose.takenAt)
+    );
+  });
+}
 
 type DecayResult = {
   remaining: BigNumber;
@@ -146,29 +177,57 @@ export default function Home() {
   const [nameHistory, setNameHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [, setTick] = useState(0);
+  // Flag pour éviter que l'effet de sauvegarde n'écrase localStorage
+  // avant que l'effet d'hydratation ait eu le temps de charger l'état.
+  const [hydrated, setHydrated] = useState(false);
 
   const nameId = useId();
   const halfId = useId();
   const doseId = useId();
   const datalistId = useId();
 
-  // Charge l'historique des molécules depuis le navigateur (post-mount → SSR safe)
+  // Hydratation : charge mesures + historique depuis localStorage (post-mount → SSR safe)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(NAME_HISTORY_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        setNameHistory(
-          parsed
-            .filter((x): x is string => typeof x === "string" && x.length > 0)
-            .slice(0, NAME_HISTORY_MAX),
-        );
+      const rawHistory = localStorage.getItem(NAME_HISTORY_KEY);
+      if (rawHistory) {
+        const parsed = JSON.parse(rawHistory);
+        if (Array.isArray(parsed)) {
+          setNameHistory(
+            parsed
+              .filter((x): x is string => typeof x === "string" && x.length > 0)
+              .slice(0, NAME_HISTORY_MAX),
+          );
+        }
       }
     } catch {
-      // localStorage indisponible / JSON corrompu → on ignore
+      // ignore
     }
+
+    try {
+      const rawState = localStorage.getItem(MEASUREMENTS_KEY);
+      if (rawState) {
+        const parsed = JSON.parse(rawState);
+        if (Array.isArray(parsed)) {
+          setMeasurements(parsed.filter(isValidMeasurement));
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    setHydrated(true);
   }, []);
+
+  // Sauvegarde : persiste les mesures à chaque changement, une fois hydratées.
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(measurements));
+    } catch {
+      // quota plein ou stockage indisponible → on ignore
+    }
+  }, [measurements, hydrated]);
 
   function rememberName(value: string) {
     setNameHistory((prev) => {
@@ -253,14 +312,14 @@ export default function Home() {
   }
 
   return (
-    <main className="flex flex-1 flex-col items-center px-6 py-16 sm:py-24">
-      <div className="w-full max-w-4xl space-y-12">
+    <main className="flex flex-1 flex-col items-center px-4 py-10 sm:px-6 sm:py-16 lg:py-20">
+      <div className="w-full max-w-4xl space-y-10 sm:space-y-12 lg:max-w-5xl lg:space-y-16 xl:max-w-6xl">
         {/* ────── HERO ────── */}
         <section className="space-y-4 text-center sm:text-left">
-          <span className="inline-flex items-center gap-2 rounded-sm border border-[var(--neon-pink)]/60 bg-[color-mix(in_oklch,var(--neon-pink),transparent_88%)] px-3 py-1 font-mono text-xs uppercase tracking-[0.25em] text-[var(--neon-pink)] [text-shadow:0_0_8px_color-mix(in_oklch,var(--neon-pink),transparent_30%)] shadow-[0_0_12px_color-mix(in_oklch,var(--neon-pink),transparent_70%)]">
+          <span className="inline-flex items-center gap-2 rounded-sm border border-[var(--neon-pink)]/60 bg-[color-mix(in_oklch,var(--neon-pink),transparent_88%)] px-3 py-1 font-mono text-[0.65rem] uppercase tracking-[0.25em] text-[var(--neon-pink)] [text-shadow:0_0_8px_color-mix(in_oklch,var(--neon-pink),transparent_30%)] shadow-[0_0_12px_color-mix(in_oklch,var(--neon-pink),transparent_70%)] sm:text-xs">
             <ActivityIcon className="size-3" /> SYS://halflife.exe
           </span>
-          <h1 className="font-heading text-4xl font-black uppercase leading-[0.95] tracking-tight sm:text-6xl">
+          <h1 className="font-heading text-[clamp(1.75rem,8vw,4.5rem)] font-black uppercase leading-[0.95] tracking-tight">
             <span className="block text-[var(--neon-white)] [text-shadow:0_0_10px_color-mix(in_oklch,var(--neon-pink),transparent_25%),0_0_24px_color-mix(in_oklch,var(--neon-pink),transparent_55%),0_0_48px_color-mix(in_oklch,var(--neon-purple),transparent_55%)]">
               HALF—LIFE
             </span>
@@ -268,7 +327,7 @@ export default function Home() {
               CYBER—DECAY
             </span>
           </h1>
-          <p className="max-w-2xl font-mono text-base text-[oklch(0.85_0.05_310)]">
+          <p className="mx-auto max-w-2xl font-mono text-sm text-[oklch(0.85_0.05_310)] sm:mx-0 sm:text-base lg:text-lg">
             &gt; Lance une mesure pour suivre l&apos;élimination d&apos;une
             molécule en temps réel. Le taux sanguin et le nombre de demi-vies
             écoulées sont mis à jour chaque seconde.
@@ -286,9 +345,9 @@ export default function Home() {
           <form
             onSubmit={add}
             noValidate
-            className="mt-5 space-y-5 rounded-md border border-[var(--neon-purple)]/30 bg-card/60 p-6 shadow-[inset_0_0_30px_color-mix(in_oklch,var(--neon-purple),transparent_85%)] backdrop-blur-sm sm:p-8"
+            className="mt-5 space-y-5 rounded-md border border-[var(--neon-purple)]/30 bg-card/60 p-4 shadow-[inset_0_0_30px_color-mix(in_oklch,var(--neon-purple),transparent_85%)] backdrop-blur-sm sm:p-6 lg:p-8"
           >
-            <div className="grid gap-5 sm:grid-cols-[1fr_auto]">
+            <div className="grid gap-5 md:grid-cols-[1fr_auto]">
               <div className="space-y-2">
                 <Label
                   htmlFor={nameId}
@@ -331,7 +390,7 @@ export default function Home() {
                     value={halfLife}
                     onChange={(e) => setHalfLife(e.target.value)}
                     placeholder="ex. 2"
-                    className="h-12 w-full min-w-0 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40 sm:w-32"
+                    className="h-12 w-full min-w-0 flex-1 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40 md:w-32 md:flex-none"
                   />
                   <div
                     role="radiogroup"
@@ -380,7 +439,7 @@ export default function Home() {
                   value={dose}
                   onChange={(e) => setDose(e.target.value)}
                   placeholder="ex. 1000"
-                  className="h-12 w-full min-w-0 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40 sm:w-40"
+                  className="h-12 w-full min-w-0 flex-1 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40 md:w-40 md:flex-none"
                 />
                 <div
                   role="radiogroup"
@@ -450,7 +509,7 @@ export default function Home() {
           </header>
 
           {measurements.length === 0 ? (
-            <div className="mt-5 rounded-md border border-dashed border-[var(--neon-purple)]/40 bg-card/30 p-10 text-center backdrop-blur-sm">
+            <div className="mt-5 rounded-md border border-dashed border-[var(--neon-purple)]/40 bg-card/30 p-6 text-center backdrop-blur-sm sm:p-10">
               <BeakerIcon className="mx-auto size-10 text-[var(--neon-purple)] [filter:drop-shadow(0_0_10px_color-mix(in_oklch,var(--neon-purple),transparent_30%))]" />
               <p className="mt-3 font-mono text-sm uppercase tracking-widest text-muted-foreground">
                 aucune mesure en cours
@@ -461,7 +520,7 @@ export default function Home() {
               </p>
             </div>
           ) : (
-            <ul className="mt-5 space-y-4">
+            <ul className="mt-5 grid gap-4 lg:grid-cols-2">
               {measurements.map((m) => (
                 <MeasurementRow
                   key={m.id}
@@ -561,11 +620,11 @@ function MeasurementRow({
       }}
     >
       {/* En-tête : nom + badge éliminé + bouton supprimer */}
-      <div className="flex items-center justify-between gap-3 border-b border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/60%] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/60%] px-4 py-3 sm:px-5">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h3
-              className="truncate font-heading text-xl font-bold uppercase tracking-wide text-[var(--neon-white)]"
+              className="truncate font-heading text-lg font-bold uppercase tracking-wide text-[var(--neon-white)] sm:text-xl"
               style={{
                 textShadow: finished
                   ? "none"
@@ -598,13 +657,13 @@ function MeasurementRow({
       </div>
 
       {/* Corps : quantité + taux + n × t½ + barre + ajout dose */}
-      <div className="space-y-4 p-5">
+      <div className="space-y-4 p-4 sm:p-5">
         <div>
           <p className="font-mono text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">
             Quantité restante dans le sang
           </p>
           <p
-            className="mt-1 font-mono text-5xl font-bold tabular-nums sm:text-6xl"
+            className="mt-1 break-all font-mono text-4xl font-bold tabular-nums sm:text-5xl lg:text-5xl xl:text-6xl"
             style={{
               color: glowColor,
               textShadow: `0 0 10px color-mix(in oklch, ${glowColor}, transparent 25%), 0 0 28px color-mix(in oklch, ${glowColor}, transparent 50%)`,
@@ -627,7 +686,7 @@ function MeasurementRow({
               Taux sanguin
             </p>
             <p
-              className="mt-1 font-mono text-3xl font-bold tabular-nums sm:text-4xl"
+              className="mt-1 font-mono text-2xl font-bold tabular-nums sm:text-3xl xl:text-4xl"
               style={{
                 color: glowColor,
                 textShadow: `0 0 8px color-mix(in oklch, ${glowColor}, transparent 30%), 0 0 22px color-mix(in oklch, ${glowColor}, transparent 55%)`,
@@ -647,7 +706,7 @@ function MeasurementRow({
               )}
             </p>
             <p
-              className="mt-1 font-mono text-3xl font-bold tabular-nums sm:text-4xl"
+              className="mt-1 font-mono text-2xl font-bold tabular-nums sm:text-3xl xl:text-4xl"
               style={{
                 color: "var(--neon-cyan)",
                 textShadow:
@@ -717,7 +776,7 @@ function MeasurementRow({
         {/* Ajout d'une dose à cette mesure */}
         <form
           onSubmit={handleAddDose}
-          className="flex flex-col gap-2 border-t border-[var(--neon-purple)]/20 pt-4 sm:flex-row sm:items-center"
+          className="flex flex-col gap-2 border-t border-[var(--neon-purple)]/20 pt-4 sm:flex-row sm:items-center sm:gap-3"
         >
           <label className="sr-only" htmlFor={`add-dose-${m.id}`}>
             Ajouter une dose à {m.name}
