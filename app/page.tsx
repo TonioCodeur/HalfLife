@@ -7,10 +7,25 @@ import {
   TrashIcon,
   ZapIcon,
 } from "lucide-react";
+import { all, create, type BigNumber } from "mathjs";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+/**
+ * Instance mathjs en mode BigNumber — arithmétique à précision arbitraire
+ * (50 chiffres significatifs). Évite la dérive du double IEEE-754 quand on
+ * cumule plusieurs doses sur un grand nombre de demi-vies.
+ */
+const math = create(all, {
+  number: "BigNumber",
+  precision: 50,
+});
+
+const BN_ZERO = math.bignumber(0);
+const BN_HALF = math.bignumber("0.5");
+const BN_HUNDRED = math.bignumber(100);
 
 type Unit = "s" | "min" | "h";
 
@@ -49,21 +64,54 @@ type Measurement = {
 };
 
 /** Seuil d'élimination — sous 1 ppm de la dose cumulée la mesure est figée à 0. */
-const ELIMINATION_THRESHOLD = 1e-6;
+const ELIMINATION_THRESHOLD = math.bignumber("1e-6");
 
-function computeRemainingFraction(m: Measurement, now: number): number {
-  const halfLifeMs = m.halfLife * UNIT_MS[m.unit];
-  const cumulative = m.doses.reduce((s, d) => s + d.amount, 0);
-  if (cumulative <= 0) return 0;
-  const remaining = m.doses.reduce((sum, d) => {
-    const halfLives = (now - d.takenAt) / halfLifeMs;
-    return sum + d.amount * Math.pow(0.5, halfLives);
-  }, 0);
-  return remaining / cumulative;
+/** Clé localStorage pour l'historique des molécules saisies. */
+const NAME_HISTORY_KEY = "halflife.molecule-history.v1";
+const NAME_HISTORY_MAX = 30;
+
+type DecayResult = {
+  remaining: BigNumber;
+  cumulative: BigNumber;
+  fraction: BigNumber;
+  halfLivesSinceStart: BigNumber;
+};
+
+/**
+ * Calcule la décroissance exacte d'une mesure via mathjs BigNumber.
+ * Chaque dose décroît indépendamment depuis sa propre prise et les
+ * contributions sont sommées : C(t) = Σ amount_i × (½)^((t − tᵢ) / t½).
+ */
+function computeDecay(m: Measurement, now: number): DecayResult {
+  const halfLifeMs = math
+    .bignumber(m.halfLife)
+    .times(math.bignumber(UNIT_MS[m.unit]));
+
+  let remaining = BN_ZERO;
+  let cumulative = BN_ZERO;
+
+  for (const d of m.doses) {
+    const elapsed = math.bignumber(now - d.takenAt);
+    const halfLives = elapsed.div(halfLifeMs);
+    const fraction = math.pow(BN_HALF, halfLives) as BigNumber;
+    const amount = math.bignumber(d.amount);
+    remaining = math.add(
+      remaining,
+      math.multiply(amount, fraction),
+    ) as BigNumber;
+    cumulative = math.add(cumulative, amount) as BigNumber;
+  }
+
+  const fraction = cumulative.gt(0) ? remaining.div(cumulative) : BN_ZERO;
+  const halfLivesSinceStart = math
+    .bignumber(now - m.doses[0].takenAt)
+    .div(halfLifeMs);
+
+  return { remaining, cumulative, fraction, halfLivesSinceStart };
 }
 
 function isMeasurementFinished(m: Measurement, now: number): boolean {
-  return computeRemainingFraction(m, now) < ELIMINATION_THRESHOLD;
+  return computeDecay(m, now).fraction.lt(ELIMINATION_THRESHOLD);
 }
 
 export default function Home() {
@@ -73,12 +121,46 @@ export default function Home() {
   const [dose, setDose] = useState("");
   const [massUnit, setMassUnit] = useState<MassUnit>("mg");
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
+  const [nameHistory, setNameHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [, setTick] = useState(0);
 
   const nameId = useId();
   const halfId = useId();
   const doseId = useId();
+  const datalistId = useId();
+
+  // Charge l'historique des molécules depuis le navigateur (post-mount → SSR safe)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(NAME_HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setNameHistory(
+          parsed
+            .filter((x): x is string => typeof x === "string" && x.length > 0)
+            .slice(0, NAME_HISTORY_MAX),
+        );
+      }
+    } catch {
+      // localStorage indisponible / JSON corrompu → on ignore
+    }
+  }, []);
+
+  function rememberName(value: string) {
+    setNameHistory((prev) => {
+      const lower = value.toLowerCase();
+      const filtered = prev.filter((x) => x.toLowerCase() !== lower);
+      const next = [value, ...filtered].slice(0, NAME_HISTORY_MAX);
+      try {
+        localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        // quota plein ou stockage désactivé → on ignore
+      }
+      return next;
+    });
+  }
 
   // Tick d'une seconde — pilote la décroissance affichée.
   // S'arrête dès que toutes les mesures sont éliminées (et redémarre si
@@ -124,6 +206,7 @@ export default function Home() {
       },
       ...prev,
     ]);
+    rememberName(trimmed);
     setName("");
     setHalfLife("");
     setDose("");
@@ -198,7 +281,15 @@ export default function Home() {
                   placeholder="ex. Paracétamol, caféine, ibuprofène…"
                   className="h-12 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40"
                   autoComplete="off"
+                  list={nameHistory.length > 0 ? datalistId : undefined}
                 />
+                {nameHistory.length > 0 && (
+                  <datalist id={datalistId}>
+                    {nameHistory.map((n) => (
+                      <option key={n} value={n} />
+                    ))}
+                  </datalist>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -385,22 +476,16 @@ function MeasurementRow({
 
   const now = Date.now();
   const startedAt = m.doses[0].takenAt;
-  const halfLifeMs = m.halfLife * UNIT_MS[m.unit];
-  const halfLivesSinceStart = (now - startedAt) / halfLifeMs;
-
-  // Somme : chaque dose décroît indépendamment depuis sa propre prise
-  const rawRemainingDose = m.doses.reduce((sum, d) => {
-    const halfLives = (now - d.takenAt) / halfLifeMs;
-    return sum + d.amount * Math.pow(0.5, halfLives);
-  }, 0);
-  const cumulativeDose = m.doses.reduce((sum, d) => sum + d.amount, 0);
-  const rawFraction =
-    cumulativeDose > 0 ? rawRemainingDose / cumulativeDose : 0;
+  const decay = computeDecay(m, now);
 
   // Sous le seuil d'élimination → on fige sur 0 (au lieu d'afficher 1e-15 mg)
-  const finished = rawFraction < ELIMINATION_THRESHOLD;
-  const remainingDose = finished ? 0 : rawRemainingDose;
-  const remainingPct = finished ? 0 : rawFraction * 100;
+  const finished = decay.fraction.lt(ELIMINATION_THRESHOLD);
+  const remainingDose = finished ? 0 : decay.remaining.toNumber();
+  const cumulativeDose = decay.cumulative.toNumber();
+  const remainingPct = finished
+    ? 0
+    : (decay.fraction.times(BN_HUNDRED) as BigNumber).toNumber();
+  const halfLivesSinceStart = decay.halfLivesSinceStart.toNumber();
 
   // Couleur du glow : éteint quand terminé, sinon pink → purple → cyan
   const glowColor = finished
