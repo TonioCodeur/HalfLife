@@ -4,10 +4,28 @@ import { useEffect, useId, useState } from "react";
 import {
   ActivityIcon,
   BeakerIcon,
+  GripVerticalIcon,
   TrashIcon,
   ZapIcon,
 } from "lucide-react";
 import { all, create, type BigNumber } from "mathjs";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -254,6 +272,26 @@ export default function Home() {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, [anyActive]);
+
+  // Drag-and-drop : pointer (mouse/touch) avec activation à 5px pour ne pas
+  // déclencher sur un simple tap, plus support clavier pour l'accessibilité.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setMeasurements((items) => {
+      const oldIndex = items.findIndex((m) => m.id === active.id);
+      const newIndex = items.findIndex((m) => m.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return items;
+      return arrayMove(items, oldIndex, newIndex);
+    });
+  }
 
   function add(e: React.FormEvent) {
     e.preventDefault();
@@ -520,16 +558,27 @@ export default function Home() {
               </p>
             </div>
           ) : (
-            <ul className="mt-5 grid gap-4 lg:grid-cols-2">
-              {measurements.map((m) => (
-                <MeasurementRow
-                  key={m.id}
-                  m={m}
-                  onRemove={remove}
-                  onAddDose={addDose}
-                />
-              ))}
-            </ul>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={measurements.map((m) => m.id)}
+                strategy={rectSortingStrategy}
+              >
+                <ul className="mt-5 grid gap-4 lg:grid-cols-2">
+                  {measurements.map((m) => (
+                    <MeasurementRow
+                      key={m.id}
+                      m={m}
+                      onRemove={remove}
+                      onAddDose={addDose}
+                    />
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
           )}
         </section>
 
@@ -554,6 +603,21 @@ function MeasurementRow({
 }) {
   const [extraDose, setExtraDose] = useState("");
   const [doseError, setDoseError] = useState<string | null>(null);
+
+  // Drag-and-drop : seule la poignée est draggable, les autres contrôles
+  // (poubelle, ajouter dose, etc.) restent cliquables normalement.
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: m.id });
+  const sortableStyle: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
 
   const now = Date.now();
   const startedAt = m.doses[0].takenAt;
@@ -607,20 +671,35 @@ function MeasurementRow({
 
   return (
     <li
+      ref={setNodeRef}
       className={
         "group relative overflow-hidden rounded-md border bg-card/70 backdrop-blur-sm transition-shadow " +
-        (finished
-          ? "border-[var(--neon-cyan)]/20 opacity-80"
-          : "border-[var(--neon-pink)]/30")
+        (isDragging
+          ? "z-50 border-[var(--neon-purple)] opacity-90 ring-2 ring-[var(--neon-purple)]/60"
+          : finished
+            ? "border-[var(--neon-cyan)]/20 opacity-80"
+            : "border-[var(--neon-pink)]/30")
       }
       style={{
-        boxShadow: finished
-          ? "0 0 12px color-mix(in oklch, var(--neon-cyan), transparent 85%)"
-          : `0 0 20px color-mix(in oklch, ${glowColor}, transparent 75%)`,
+        ...sortableStyle,
+        boxShadow: isDragging
+          ? "0 0 30px color-mix(in oklch, var(--neon-purple), transparent 50%)"
+          : finished
+            ? "0 0 12px color-mix(in oklch, var(--neon-cyan), transparent 85%)"
+            : `0 0 20px color-mix(in oklch, ${glowColor}, transparent 75%)`,
       }}
     >
-      {/* En-tête : nom + badge éliminé + bouton supprimer */}
-      <div className="flex items-center justify-between gap-3 border-b border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/60%] px-4 py-3 sm:px-5">
+      {/* En-tête : poignée drag + nom + badge éliminé + bouton supprimer */}
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/60%] px-3 py-3 sm:px-4">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          aria-label={`Réordonner la mesure ${m.name}`}
+          className="-ml-1 flex h-9 w-7 shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-[var(--neon-purple)]/70 transition-colors hover:bg-[color-mix(in_oklch,var(--neon-purple),transparent_85%)] hover:text-[var(--neon-purple)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--neon-purple)] active:cursor-grabbing"
+        >
+          <GripVerticalIcon className="size-4" />
+        </button>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3
