@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   ActivityIcon,
   BeakerIcon,
+  BellIcon,
+  BellOffIcon,
   GripVerticalIcon,
   TrashIcon,
   ZapIcon,
@@ -185,6 +187,51 @@ function isMeasurementFinished(m: Measurement, now: number): boolean {
   return computeDecay(m, now).fraction.lt(ELIMINATION_THRESHOLD);
 }
 
+/** Demi-vies écoulées depuis la dernière dose (utilisé par l'affichage et
+ * par le déclencheur de notifications). */
+function halfLivesSinceLastDose(m: Measurement, now: number): number {
+  const halfLifeMs = math
+    .bignumber(m.halfLife)
+    .times(math.bignumber(UNIT_MS[m.unit]));
+  const lastTakenAt = m.doses[m.doses.length - 1].takenAt;
+  return math.bignumber(now - lastTakenAt).div(halfLifeMs).toNumber();
+}
+
+/* ── Notifications navigateur ─────────────────────────────────────────── */
+
+function canNotify(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "Notification" in window &&
+    Notification.permission === "granted"
+  );
+}
+
+function notifyHalfLife(
+  m: Measurement,
+  bucket: number,
+  remainingDose: number,
+  pct: number,
+) {
+  if (!canNotify()) return;
+  const plural = bucket > 1 ? "s" : "";
+  new Notification(`⌬ Halflife · ${m.name}`, {
+    body: `${bucket} demi-vie${plural} écoulée${plural} depuis la dernière dose · ${formatDose(remainingDose)} ${MASS_LABEL[m.massUnit]} restants (${pct.toFixed(1)} %)`,
+    tag: `halflife-${m.id}-${bucket}`,
+    icon: "/favicon.ico",
+  });
+}
+
+function notifyEliminated(m: Measurement) {
+  if (!canNotify()) return;
+  new Notification(`✗ Halflife · Élimination terminée`, {
+    body: `${m.name} a été entièrement éliminée du sang.`,
+    tag: `eliminated-${m.id}`,
+    icon: "/favicon.ico",
+    requireInteraction: true,
+  });
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [halfLife, setHalfLife] = useState("");
@@ -198,6 +245,16 @@ export default function Home() {
   // Flag pour éviter que l'effet de sauvegarde n'écrase localStorage
   // avant que l'effet d'hydratation ait eu le temps de charger l'état.
   const [hydrated, setHydrated] = useState(false);
+
+  // Notifications : permission de l'OS + tracker des notifs déjà envoyées.
+  // Le ref n'est pas persisté : à chaque refresh on ré-init au state courant
+  // pour ne pas spammer rétroactivement.
+  const [notifPermission, setNotifPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("default");
+  const notificationStateRef = useRef<
+    Map<string, { lastWholeBucket: number; eliminationNotified: boolean }>
+  >(new Map());
 
   const nameId = useId();
   const halfId = useId();
@@ -273,6 +330,66 @@ export default function Home() {
     return () => clearInterval(id);
   }, [anyActive]);
 
+  // Lecture de la permission de notification au mount (SSR-safe).
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotifPermission("unsupported");
+      return;
+    }
+    setNotifPermission(Notification.permission);
+  }, []);
+
+  async function requestNotifications() {
+    if (notifPermission !== "default") return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    try {
+      const result = await Notification.requestPermission();
+      setNotifPermission(result);
+    } catch {
+      // Safari peut throw — on ignore.
+    }
+  }
+
+  // Détection des transitions à chaque tick : franchissement d'une demi-vie
+  // entière + élimination complète. Effet sans deps → tourne après chaque
+  // render (le tick re-render la page chaque seconde).
+  useEffect(() => {
+    if (notifPermission !== "granted") return;
+    const now = Date.now();
+    const tracker = notificationStateRef.current;
+
+    for (const m of measurements) {
+      let st = tracker.get(m.id);
+      if (!st) {
+        // Init paresseuse au state courant — pas de notifs rétroactives.
+        st = {
+          lastWholeBucket: Math.floor(halfLivesSinceLastDose(m, now)),
+          eliminationNotified: isMeasurementFinished(m, now),
+        };
+        tracker.set(m.id, st);
+        continue;
+      }
+
+      // a) Élimination complète — prioritaire pour éviter une double notif.
+      if (!st.eliminationNotified && isMeasurementFinished(m, now)) {
+        notifyEliminated(m);
+        st.eliminationNotified = true;
+        continue;
+      }
+
+      // b) Franchissement d'une demi-vie entière depuis la dernière dose.
+      const halfLivesNow = halfLivesSinceLastDose(m, now);
+      const bucket = Math.floor(halfLivesNow);
+      if (bucket > st.lastWholeBucket) {
+        const decay = computeDecay(m, now);
+        const remainingDose = decay.remaining.toNumber();
+        const pct = (decay.fraction.times(BN_HUNDRED) as BigNumber).toNumber();
+        notifyHalfLife(m, bucket, remainingDose, pct);
+        st.lastWholeBucket = bucket;
+      }
+    }
+  });
+
   // Drag-and-drop : pointer (mouse/touch) avec activation à 5px pour ne pas
   // déclencher sur un simple tap, plus support clavier pour l'accessibilité.
   const sensors = useSensors(
@@ -332,14 +449,22 @@ export default function Home() {
   }
 
   function remove(id: string) {
+    notificationStateRef.current.delete(id);
     setMeasurements((prev) => prev.filter((m) => m.id !== id));
   }
 
   function clearAll() {
+    notificationStateRef.current.clear();
     setMeasurements([]);
   }
 
   function addDose(id: string, amount: number) {
+    // Reset le tracker pour cette mesure : la dernière dose est l'instant 0,
+    // l'élimination n'est plus atteinte.
+    notificationStateRef.current.set(id, {
+      lastWholeBucket: 0,
+      eliminationNotified: false,
+    });
     setMeasurements((prev) =>
       prev.map((m) =>
         m.id === id
@@ -371,6 +496,50 @@ export default function Home() {
             écoulées sont mis à jour chaque seconde.
           </p>
         </section>
+
+        {/* ────── BANDEAU NOTIFICATIONS ────── */}
+        {notifPermission === "default" && (
+          <section
+            aria-label="Activer les notifications"
+            className="flex flex-col items-start gap-4 rounded-md border border-[var(--neon-pink)]/40 bg-card/60 p-4 shadow-[0_0_20px_color-mix(in_oklch,var(--neon-pink),transparent_80%),inset_0_0_30px_color-mix(in_oklch,var(--neon-pink),transparent_85%)] backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between sm:p-5"
+          >
+            <div className="flex items-start gap-3 sm:items-center">
+              <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-sm border border-[var(--neon-pink)]/60 bg-[color-mix(in_oklch,var(--neon-pink),transparent_85%)] text-[var(--neon-pink)] shadow-[0_0_10px_color-mix(in_oklch,var(--neon-pink),transparent_60%)]">
+                <BellIcon className="size-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="font-mono text-xs uppercase tracking-[0.25em] text-[var(--neon-pink)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-pink),transparent_40%)]">
+                  alertes système
+                </p>
+                <p className="mt-1 text-sm text-[oklch(0.85_0.05_310)]">
+                  Active les notifications pour être prévenu à chaque demi-vie
+                  écoulée et quand une molécule est entièrement éliminée.
+                </p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              size="lg"
+              onClick={requestNotifications}
+              className="w-full sm:w-auto"
+            >
+              <BellIcon /> Activer
+            </Button>
+          </section>
+        )}
+
+        {notifPermission === "denied" && (
+          <section
+            role="status"
+            className="flex items-center gap-3 rounded-md border border-[var(--neon-cyan)]/30 bg-card/40 px-4 py-3 font-mono text-xs text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_50%)] backdrop-blur-sm"
+          >
+            <BellOffIcon className="size-4" />
+            <span className="uppercase tracking-widest">
+              notifications bloquées par le navigateur — autorisez
+              halflife.exe dans les réglages pour les recevoir
+            </span>
+          </section>
+        )}
 
         {/* ────── FORMULAIRE ────── */}
         <section>
@@ -621,7 +790,6 @@ function MeasurementRow({
 
   const now = Date.now();
   const startedAt = m.doses[0].takenAt;
-  const lastDoseTakenAt = m.doses[m.doses.length - 1].takenAt;
   const decay = computeDecay(m, now);
 
   // Sous le seuil d'élimination → on fige sur 0 (au lieu d'afficher 1e-15 mg)
@@ -640,13 +808,7 @@ function MeasurementRow({
     : (displayFraction.times(BN_HUNDRED) as BigNumber).toNumber();
 
   // Demi-vies écoulées depuis la dernière dose (repart de 0 à chaque ajout).
-  const halfLifeMsBN = math
-    .bignumber(m.halfLife)
-    .times(math.bignumber(UNIT_MS[m.unit]));
-  const halfLivesSinceLastDose = math
-    .bignumber(now - lastDoseTakenAt)
-    .div(halfLifeMsBN)
-    .toNumber();
+  const halfLivesSinceLast = halfLivesSinceLastDose(m, now);
 
   // Couleur du glow : éteint quand terminé, sinon pink → purple → cyan
   const glowColor = finished
@@ -792,7 +954,7 @@ function MeasurementRow({
                   "0 0 8px color-mix(in oklch, var(--neon-cyan), transparent 30%), 0 0 22px color-mix(in oklch, var(--neon-cyan), transparent 55%)",
               }}
             >
-              {halfLivesSinceLastDose.toFixed(2)}
+              {halfLivesSinceLast.toFixed(2)}
               <span className="ml-1 text-lg text-muted-foreground">× t½</span>
             </p>
           </div>
