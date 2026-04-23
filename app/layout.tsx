@@ -37,12 +37,14 @@ export default function RootLayout({
           aria-hidden="true"
           className="mx-auto w-fit overflow-x-auto whitespace-pre text-center font-mono text-[0.5rem] leading-tight text-[var(--neon-pink)]/45 [text-shadow:0_0_4px_color-mix(in_oklch,var(--neon-pink),transparent_75%)] sm:text-[0.6rem]"
         >
-{` _____           _       _____           _
-  |_   _|         (_)     /  __ \\         | |
-    | | ___  _ __  _  ___ | /  \\/ ___   __| | ___
-    | |/ _ \\| '_ \\| |/ _ \\| |    / _ \\ / _\` |/ _ \\
-    | | (_) | | | | | (_) | \\__/\\ (_) | (_| |  __/
-    \\_/\\___/|_| |_|_|\\___/ \\____/\\___/ \\__,_|\\___|`}
+        <div className="text-left">
+        {`_____           _       _____           _
+          |_   _|         (_)     /  __ \\         | |
+            | | ___  _ __  _  ___ | /  \\/ ___   __| | ___
+            | |/ _ \\| '_ \\| |/ _ \\| |    / _ \\ / _\` |/ _ \\
+            | | (_) | | | | | (_) | \\__/\\ (_) | (_| |  __/
+            \\_/\\___/|_| |_|_|\\___/ \\____/\\___/ \\__,_|\\___|`}
+        </div>
         </pre>
       </body>
     </html>
