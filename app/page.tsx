@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIcon,
   BeakerIcon,
@@ -232,6 +232,37 @@ function notifyEliminated(m: Measurement) {
   });
 }
 
+/* ── Store externe : permission de notification du navigateur ─────────────
+ * Pas de vrai event "permissionchange" (peu supporté). Le store maintient
+ * une liste de listeners qu'on notifie manuellement après requestPermission.
+ * Compatible useSyncExternalStore → SSR-safe + pas de setState dans un
+ * useEffect (qui fait râler la règle react-hooks/set-state-in-effect). */
+type NotifPerm = NotificationPermission | "unsupported";
+
+const permissionListeners = new Set<() => void>();
+
+function subscribePermission(cb: () => void) {
+  permissionListeners.add(cb);
+  return () => {
+    permissionListeners.delete(cb);
+  };
+}
+
+function getPermissionSnapshot(): NotifPerm {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return "unsupported";
+  }
+  return Notification.permission;
+}
+
+function getServerPermissionSnapshot(): NotifPerm {
+  return "default";
+}
+
+function notifyPermissionChanged() {
+  permissionListeners.forEach((cb) => cb());
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [halfLife, setHalfLife] = useState("");
@@ -241,17 +272,23 @@ export default function Home() {
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [nameHistory, setNameHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [, setTick] = useState(0);
+  // `now` est piloté par le tick 1Hz et utilisé partout en lieu et place de
+  // Date.now() (impur en render selon react-hooks/purity).
+  const [now, setNow] = useState<number>(() => Date.now());
   // Flag pour éviter que l'effet de sauvegarde n'écrase localStorage
   // avant que l'effet d'hydratation ait eu le temps de charger l'état.
   const [hydrated, setHydrated] = useState(false);
 
-  // Notifications : permission de l'OS + tracker des notifs déjà envoyées.
-  // Le ref n'est pas persisté : à chaque refresh on ré-init au state courant
-  // pour ne pas spammer rétroactivement.
-  const [notifPermission, setNotifPermission] = useState<
-    NotificationPermission | "unsupported"
-  >("default");
+  // Permission de notification — externe au cycle React, lue via
+  // useSyncExternalStore pour rester SSR-safe sans setState-in-effect.
+  const notifPermission = useSyncExternalStore(
+    subscribePermission,
+    getPermissionSnapshot,
+    getServerPermissionSnapshot,
+  );
+
+  // Tracker des notifications déjà envoyées. Pas persisté : au refresh on
+  // ré-init au state courant pour ne pas spammer rétroactivement.
   const notificationStateRef = useRef<
     Map<string, { lastWholeBucket: number; eliminationNotified: boolean }>
   >(new Map());
@@ -261,18 +298,22 @@ export default function Home() {
   const doseId = useId();
   const datalistId = useId();
 
-  // Hydratation : charge mesures + historique depuis localStorage (post-mount → SSR safe)
+  // Hydratation post-mount depuis localStorage. On doit le faire après mount
+  // (pas via useState lazy init) pour éviter un mismatch d'hydratation SSR :
+  // le premier render côté serveur ne peut pas lire localStorage. La règle
+  // react-hooks/set-state-in-effect est donc volontairement désactivée ici.
   useEffect(() => {
+    let nextHistory: string[] | null = null;
+    let nextMeasurements: Measurement[] | null = null;
+
     try {
       const rawHistory = localStorage.getItem(NAME_HISTORY_KEY);
       if (rawHistory) {
         const parsed = JSON.parse(rawHistory);
         if (Array.isArray(parsed)) {
-          setNameHistory(
-            parsed
-              .filter((x): x is string => typeof x === "string" && x.length > 0)
-              .slice(0, NAME_HISTORY_MAX),
-          );
+          nextHistory = parsed
+            .filter((x): x is string => typeof x === "string" && x.length > 0)
+            .slice(0, NAME_HISTORY_MAX);
         }
       }
     } catch {
@@ -284,14 +325,20 @@ export default function Home() {
       if (rawState) {
         const parsed = JSON.parse(rawState);
         if (Array.isArray(parsed)) {
-          setMeasurements(parsed.filter(isValidMeasurement));
+          nextMeasurements = parsed.filter(isValidMeasurement);
         }
       }
     } catch {
       // ignore
     }
 
+    /* eslint-disable react-hooks/set-state-in-effect -- hydratation
+     * post-mount depuis localStorage : pas de pattern React alternatif
+     * sans risquer un mismatch d'hydratation SSR. */
+    if (nextHistory) setNameHistory(nextHistory);
+    if (nextMeasurements) setMeasurements(nextMeasurements);
     setHydrated(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   // Sauvegarde : persiste les mesures à chaque changement, une fois hydratées.
@@ -318,44 +365,34 @@ export default function Home() {
     });
   }
 
-  // Tick d'une seconde — pilote la décroissance affichée.
-  // S'arrête dès que toutes les mesures sont éliminées (et redémarre si
-  // l'utilisateur ajoute une dose qui ranime une mesure terminée).
+  // Tick d'une seconde — pilote `now`, qui déclenche tous les recalculs.
+  // S'arrête dès que toutes les mesures sont éliminées et redémarre si
+  // l'utilisateur ajoute une dose qui ranime une mesure terminée.
   const anyActive = measurements.some(
-    (m) => !isMeasurementFinished(m, Date.now()),
+    (m) => !isMeasurementFinished(m, now),
   );
   useEffect(() => {
     if (!anyActive) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [anyActive]);
-
-  // Lecture de la permission de notification au mount (SSR-safe).
-  useEffect(() => {
-    if (typeof window === "undefined" || !("Notification" in window)) {
-      setNotifPermission("unsupported");
-      return;
-    }
-    setNotifPermission(Notification.permission);
-  }, []);
 
   async function requestNotifications() {
     if (notifPermission !== "default") return;
     if (typeof window === "undefined" || !("Notification" in window)) return;
     try {
-      const result = await Notification.requestPermission();
-      setNotifPermission(result);
+      await Notification.requestPermission();
+      notifyPermissionChanged();
     } catch {
       // Safari peut throw — on ignore.
     }
   }
 
   // Détection des transitions à chaque tick : franchissement d'une demi-vie
-  // entière + élimination complète. Effet sans deps → tourne après chaque
-  // render (le tick re-render la page chaque seconde).
+  // entière + élimination complète. Tourne quand `now` ou `measurements`
+  // changent — `now` est mis à jour chaque seconde par le tick.
   useEffect(() => {
     if (notifPermission !== "granted") return;
-    const now = Date.now();
     const tracker = notificationStateRef.current;
 
     for (const m of measurements) {
@@ -388,7 +425,7 @@ export default function Home() {
         st.lastWholeBucket = bucket;
       }
     }
-  });
+  }, [notifPermission, measurements, now]);
 
   // Drag-and-drop : pointer (mouse/touch) avec activation à 5px pour ne pas
   // déclencher sur un simple tap, plus support clavier pour l'accessibilité.
@@ -741,6 +778,7 @@ export default function Home() {
                     <MeasurementRow
                       key={m.id}
                       m={m}
+                      now={now}
                       onRemove={remove}
                       onAddDose={addDose}
                     />
@@ -752,7 +790,7 @@ export default function Home() {
         </section>
 
         <footer className="border-t border-[var(--neon-pink)]/20 pt-6 text-center font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          // C(t) = C₀ × (½)^(t / t½) //
+          {"// C(t) = C₀ × (½)^(t / t½) //"}
         </footer>
       </div>
     </main>
@@ -763,10 +801,12 @@ export default function Home() {
 
 function MeasurementRow({
   m,
+  now,
   onRemove,
   onAddDose,
 }: {
   m: Measurement;
+  now: number;
   onRemove: (id: string) => void;
   onAddDose: (id: string, amount: number) => void;
 }) {
@@ -788,7 +828,6 @@ function MeasurementRow({
     transition,
   };
 
-  const now = Date.now();
   const startedAt = m.doses[0].takenAt;
   const decay = computeDecay(m, now);
 
@@ -1054,6 +1093,20 @@ function MeasurementRow({
             </span>
           )}
         </form>
+
+        {/* Art ASCII (décoratif, expression JS → pas de règle
+            react/no-unescaped-entities qui s'applique). */}
+        <pre
+          aria-hidden="true"
+          className="mx-auto w-fit overflow-x-auto whitespace-pre text-center font-mono text-[0.5rem] leading-tight text-[var(--neon-pink)]/45 [text-shadow:0_0_4px_color-mix(in_oklch,var(--neon-pink),transparent_75%)] sm:text-[0.6rem]"
+        >
+{` _____           _       _____           _
+|_   _|         (_)     /  __ \\         | |
+  | | ___  _ __  _  ___ | /  \\/ ___   __| | ___
+  | |/ _ \\| '_ \\| |/ _ \\| |    / _ \\ / _\` |/ _ \\
+  | | (_) | | | | | (_) | \\__/\\ (_) | (_| |  __/
+  \\_/\\___/|_| |_|_|\\___/ \\____/\\___/ \\__,_|\\___|`}
+        </pre>
       </div>
     </li>
   );
