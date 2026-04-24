@@ -37,7 +37,7 @@ export default function RootLayout({
           aria-hidden="true"
           className="mx-auto w-fit overflow-x-auto whitespace-pre text-center font-mono text-[0.5rem] leading-tight text-[var(--neon-pink)]/45 [text-shadow:0_0_4px_color-mix(in_oklch,var(--neon-pink),transparent_75%)] sm:text-[0.6rem]"
         >
-        <div className="text-left">
+        <div className="text-left font-bold text-[var(--neon-pink)]/75 [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-pink),transparent_75%)]">
         {` _____           _       _____           _
 |_   _|         (_)     /  __ \\         | |
   | | ___  _ __  _  ___ | /  \\/ ___   __| | ___
