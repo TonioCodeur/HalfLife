@@ -48,7 +48,7 @@ export default function RootLayout({
         {/* Art ASCII (décoratif, expression JS → pas de règle
             react/no-unescaped-entities qui s'applique). */}
         <pre
-          aria-hidden="true"
+          aria-hidden="false"
           className="mx-auto w-fit overflow-x-auto whitespace-pre text-center font-mono text-[0.5rem] leading-tight text-[var(--neon-pink)]/45 sm:text-[0.6rem]"
         >
         <div className="text-left font-bold text-[var(--neon-pink)]/75">
