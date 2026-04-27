@@ -1,15 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
-  ActivityIcon,
-  BeakerIcon,
-  BellIcon,
-  BellOffIcon,
-  GripVerticalIcon,
-  TrashIcon,
-  ZapIcon,
-} from "lucide-react";
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { all, create, type BigNumber } from "mathjs";
 import {
   DndContext,
@@ -29,69 +26,58 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  MoleculeIcon,
+  getSuggestedMolecules,
+  lookupMolecule,
+  type MoleculeMeta,
+} from "./molecules";
 
-/**
- * Instance mathjs en mode BigNumber — arithmétique à précision arbitraire
- * (50 chiffres significatifs). Évite la dérive du double IEEE-754 quand on
- * cumule plusieurs doses sur un grand nombre de demi-vies.
- */
-const math = create(all, {
-  number: "BigNumber",
-  precision: 50,
-});
-
+/* ──────────────────────────────────────────────────────────────────
+   MATHJS — précision arbitraire pour la décroissance
+   ────────────────────────────────────────────────────────────── */
+const math = create(all, { number: "BigNumber", precision: 50 });
 const BN_ZERO = math.bignumber(0);
 const BN_HALF = math.bignumber("0.5");
 const BN_HUNDRED = math.bignumber(100);
 
 type Unit = "s" | "min" | "h";
-
 const UNIT_MS: Record<Unit, number> = {
   s: 1_000,
   min: 60_000,
   h: 3_600_000,
 };
-
-const UNIT_LABEL: Record<Unit, string> = {
-  s: "s",
-  min: "min",
-  h: "h",
-};
+const UNIT_LABEL: Record<Unit, string> = { s: "s", min: "min", h: "h" };
 
 type MassUnit = "ug" | "mg" | "g";
-
 const MASS_LABEL: Record<MassUnit, string> = {
   ug: "µg",
   mg: "mg",
   g: "g",
 };
 
-type Dose = {
-  amount: number;
-  takenAt: number;
-};
-
+type Dose = { amount: number; takenAt: number };
 type Measurement = {
   id: string;
   name: string;
   halfLife: number;
   unit: Unit;
   massUnit: MassUnit;
-  doses: Dose[]; // au moins une dose ; doses[0] = dose initiale
+  doses: Dose[];
 };
 
-/** Seuil d'élimination — sous 1 ppm de la dose cumulée la mesure est figée à 0. */
 const ELIMINATION_THRESHOLD = math.bignumber("1e-6");
 
-/** Clés localStorage. */
+/* ──────────────────────────────────────────────────────────────────
+   STORAGE
+   ────────────────────────────────────────────────────────────── */
 const NAME_HISTORY_KEY = "halflife.molecule-history.v1";
 const NAME_HISTORY_MAX = 30;
 const MEASUREMENTS_KEY = "halflife.measurements.v1";
+const THEME_KEY = "halflife.theme.v2";
 
-/** Garde-fou : valide la forme d'une mesure désérialisée depuis localStorage. */
+type ThemeMode = "light" | "dark" | "auto";
+
 function isValidMeasurement(x: unknown): x is Measurement {
   if (!x || typeof x !== "object") return false;
   const m = x as Record<string, unknown>;
@@ -121,26 +107,21 @@ function isValidMeasurement(x: unknown): x is Measurement {
   });
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   DECAY MATH
+   ────────────────────────────────────────────────────────────── */
 type DecayResult = {
   remaining: BigNumber;
   cumulative: BigNumber;
   fraction: BigNumber;
-  halfLivesSinceStart: BigNumber;
 };
 
-/**
- * Calcule la décroissance exacte d'une mesure via mathjs BigNumber.
- * Chaque dose décroît indépendamment depuis sa propre prise et les
- * contributions sont sommées : C(t) = Σ amount_i × (½)^((t − tᵢ) / t½).
- */
 function computeDecay(m: Measurement, now: number): DecayResult {
   const halfLifeMs = math
     .bignumber(m.halfLife)
     .times(math.bignumber(UNIT_MS[m.unit]));
-
   let remaining = BN_ZERO;
   let cumulative = BN_ZERO;
-
   for (const d of m.doses) {
     const elapsed = math.bignumber(now - d.takenAt);
     const halfLives = elapsed.div(halfLifeMs);
@@ -152,26 +133,15 @@ function computeDecay(m: Measurement, now: number): DecayResult {
     ) as BigNumber;
     cumulative = math.add(cumulative, amount) as BigNumber;
   }
-
   const fraction = cumulative.gt(0) ? remaining.div(cumulative) : BN_ZERO;
-  const halfLivesSinceStart = math
-    .bignumber(now - m.doses[0].takenAt)
-    .div(halfLifeMs);
-
-  return { remaining, cumulative, fraction, halfLivesSinceStart };
+  return { remaining, cumulative, fraction };
 }
 
-/**
- * Concentration sanguine au moment exact de la dernière dose.
- * Sert de nouveau "100 %" : à chaque ajout de dose, le taux affiché
- * est réinitialisé à 100 % et le compteur de demi-vies repart de zéro.
- */
 function computePeakAtLastDose(m: Measurement): BigNumber {
   const halfLifeMs = math
     .bignumber(m.halfLife)
     .times(math.bignumber(UNIT_MS[m.unit]));
   const lastTakenAt = m.doses[m.doses.length - 1].takenAt;
-
   let peak = BN_ZERO;
   for (const d of m.doses) {
     const elapsed = math.bignumber(lastTakenAt - d.takenAt);
@@ -187,8 +157,6 @@ function isMeasurementFinished(m: Measurement, now: number): boolean {
   return computeDecay(m, now).fraction.lt(ELIMINATION_THRESHOLD);
 }
 
-/** Demi-vies écoulées depuis la dernière dose (utilisé par l'affichage et
- * par le déclencheur de notifications). */
 function halfLivesSinceLastDose(m: Measurement, now: number): number {
   const halfLifeMs = math
     .bignumber(m.halfLife)
@@ -197,8 +165,9 @@ function halfLivesSinceLastDose(m: Measurement, now: number): number {
   return math.bignumber(now - lastTakenAt).div(halfLifeMs).toNumber();
 }
 
-/* ── Notifications navigateur ─────────────────────────────────────────── */
-
+/* ──────────────────────────────────────────────────────────────────
+   NOTIFICATIONS NAVIGATEUR
+   ────────────────────────────────────────────────────────────── */
 function canNotify(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -232,63 +201,77 @@ function notifyEliminated(m: Measurement) {
   });
 }
 
-/* ── Store externe : permission de notification du navigateur ─────────────
- * Pas de vrai event "permissionchange" (peu supporté). Le store maintient
- * une liste de listeners qu'on notifie manuellement après requestPermission.
- * Compatible useSyncExternalStore → SSR-safe + pas de setState dans un
- * useEffect (qui fait râler la règle react-hooks/set-state-in-effect). */
 type NotifPerm = NotificationPermission | "unsupported";
-
 const permissionListeners = new Set<() => void>();
-
 function subscribePermission(cb: () => void) {
   permissionListeners.add(cb);
-  return () => {
-    permissionListeners.delete(cb);
-  };
+  return () => permissionListeners.delete(cb);
 }
-
 function getPermissionSnapshot(): NotifPerm {
   if (typeof window === "undefined" || !("Notification" in window)) {
     return "unsupported";
   }
   return Notification.permission;
 }
-
 function getServerPermissionSnapshot(): NotifPerm {
   return "default";
 }
-
 function notifyPermissionChanged() {
   permissionListeners.forEach((cb) => cb());
 }
 
+/* ── Store externe : prefers-color-scheme ──────────────────────────
+ * Évite setState-in-effect : la souscription au matchMedia se fait
+ * via la callback de useSyncExternalStore. */
+function subscribeColorScheme(cb: () => void) {
+  if (typeof window === "undefined" || !window.matchMedia) return () => {};
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+}
+function getColorSchemeSnapshot(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+function getServerColorSchemeSnapshot(): boolean {
+  return false;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   APP
+   ────────────────────────────────────────────────────────────── */
 export function HalflifeApp() {
+  /* ── Form state ── */
   const [name, setName] = useState("");
   const [halfLife, setHalfLife] = useState("");
   const [unit, setUnit] = useState<Unit>("h");
   const [dose, setDose] = useState("");
   const [massUnit, setMassUnit] = useState<MassUnit>("mg");
+  const [error, setError] = useState<string | null>(null);
+
+  /* ── Persisted state ── */
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [nameHistory, setNameHistory] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  // `now` est piloté par le tick 1Hz et utilisé partout en lieu et place de
-  // Date.now() (impur en render selon react-hooks/purity).
-  const [now, setNow] = useState<number>(() => Date.now());
-  // Flag pour éviter que l'effet de sauvegarde n'écrase localStorage
-  // avant que l'effet d'hydratation ait eu le temps de charger l'état.
   const [hydrated, setHydrated] = useState(false);
 
-  // Permission de notification — externe au cycle React, lue via
-  // useSyncExternalStore pour rester SSR-safe sans setState-in-effect.
+  /* ── Tick (1Hz) ── */
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  /* ── Theme (light / dark / auto) ── */
+  const [theme, setTheme] = useState<ThemeMode>("auto");
+  const systemDark = useSyncExternalStore(
+    subscribeColorScheme,
+    getColorSchemeSnapshot,
+    getServerColorSchemeSnapshot,
+  );
+  const effectiveTheme = theme === "auto" ? (systemDark ? "dark" : "light") : theme;
+
+  /* ── Notifications ── */
   const notifPermission = useSyncExternalStore(
     subscribePermission,
     getPermissionSnapshot,
     getServerPermissionSnapshot,
   );
-
-  // Tracker des notifications déjà envoyées. Pas persisté : au refresh on
-  // ré-init au state courant pour ne pas spammer rétroactivement.
   const notificationStateRef = useRef<
     Map<string, { lastWholeBucket: number; eliminationNotified: boolean }>
   >(new Map());
@@ -298,18 +281,16 @@ export function HalflifeApp() {
   const doseId = useId();
   const datalistId = useId();
 
-  // Hydratation post-mount depuis localStorage. On doit le faire après mount
-  // (pas via useState lazy init) pour éviter un mismatch d'hydratation SSR :
-  // le premier render côté serveur ne peut pas lire localStorage. La règle
-  // react-hooks/set-state-in-effect est donc volontairement désactivée ici.
+  /* ── Hydratation localStorage ── */
   useEffect(() => {
     let nextHistory: string[] | null = null;
     let nextMeasurements: Measurement[] | null = null;
+    let nextTheme: ThemeMode | null = null;
 
     try {
-      const rawHistory = localStorage.getItem(NAME_HISTORY_KEY);
-      if (rawHistory) {
-        const parsed = JSON.parse(rawHistory);
+      const raw = localStorage.getItem(NAME_HISTORY_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
           nextHistory = parsed
             .filter((x): x is string => typeof x === "string" && x.length > 0)
@@ -317,66 +298,69 @@ export function HalflifeApp() {
         }
       }
     } catch {
-      // ignore
+      /* ignore */
     }
-
     try {
-      const rawState = localStorage.getItem(MEASUREMENTS_KEY);
-      if (rawState) {
-        const parsed = JSON.parse(rawState);
+      const raw = localStorage.getItem(MEASUREMENTS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
           nextMeasurements = parsed.filter(isValidMeasurement);
         }
       }
     } catch {
-      // ignore
+      /* ignore */
+    }
+    try {
+      const t = localStorage.getItem(THEME_KEY);
+      if (t === "light" || t === "dark" || t === "auto") nextTheme = t;
+    } catch {
+      /* ignore */
     }
 
     /* eslint-disable react-hooks/set-state-in-effect -- hydratation
-     * post-mount depuis localStorage : pas de pattern React alternatif
-     * sans risquer un mismatch d'hydratation SSR. */
+     * post-mount depuis localStorage : pas d'alternative sans risquer
+     * un mismatch d'hydratation SSR. */
     if (nextHistory) setNameHistory(nextHistory);
     if (nextMeasurements) setMeasurements(nextMeasurements);
+    if (nextTheme) setTheme(nextTheme);
     setHydrated(true);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
-  // Sauvegarde : persiste les mesures à chaque changement, une fois hydratées.
+  /* ── Persistance ── */
   useEffect(() => {
     if (!hydrated) return;
     try {
       localStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(measurements));
     } catch {
-      // quota plein ou stockage indisponible → on ignore
+      /* ignore */
     }
   }, [measurements, hydrated]);
 
-  function rememberName(value: string) {
-    setNameHistory((prev) => {
-      const lower = value.toLowerCase();
-      const filtered = prev.filter((x) => x.toLowerCase() !== lower);
-      const next = [value, ...filtered].slice(0, NAME_HISTORY_MAX);
-      try {
-        localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next));
-      } catch {
-        // quota plein ou stockage désactivé → on ignore
-      }
-      return next;
-    });
-  }
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      /* ignore */
+    }
+  }, [theme, hydrated]);
 
-  // Tick d'une seconde — pilote `now`, qui déclenche tous les recalculs.
-  // S'arrête dès que toutes les mesures sont éliminées et redémarre si
-  // l'utilisateur ajoute une dose qui ranime une mesure terminée.
-  const anyActive = measurements.some(
-    (m) => !isMeasurementFinished(m, now),
-  );
+  /* ── Sync data-theme sur <html> ── */
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
+  }, [effectiveTheme]);
+
+  /* ── Tick 1Hz ── */
+  const anyActive = measurements.some((m) => !isMeasurementFinished(m, now));
   useEffect(() => {
     if (!anyActive) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [anyActive]);
 
+  /* ── Notification permission ── */
   async function requestNotifications() {
     if (notifPermission !== "default") return;
     if (typeof window === "undefined" || !("Notification" in window)) return;
@@ -384,21 +368,17 @@ export function HalflifeApp() {
       await Notification.requestPermission();
       notifyPermissionChanged();
     } catch {
-      // Safari peut throw — on ignore.
+      /* Safari peut throw — ignorer */
     }
   }
 
-  // Détection des transitions à chaque tick : franchissement d'une demi-vie
-  // entière + élimination complète. Tourne quand `now` ou `measurements`
-  // changent — `now` est mis à jour chaque seconde par le tick.
+  /* ── Détection des transitions notifs ── */
   useEffect(() => {
     if (notifPermission !== "granted") return;
     const tracker = notificationStateRef.current;
-
     for (const m of measurements) {
       let st = tracker.get(m.id);
       if (!st) {
-        // Init paresseuse au state courant — pas de notifs rétroactives.
         st = {
           lastWholeBucket: Math.floor(halfLivesSinceLastDose(m, now)),
           eliminationNotified: isMeasurementFinished(m, now),
@@ -406,15 +386,11 @@ export function HalflifeApp() {
         tracker.set(m.id, st);
         continue;
       }
-
-      // a) Élimination complète — prioritaire pour éviter une double notif.
       if (!st.eliminationNotified && isMeasurementFinished(m, now)) {
         notifyEliminated(m);
         st.eliminationNotified = true;
         continue;
       }
-
-      // b) Franchissement d'une demi-vie entière depuis la dernière dose.
       const halfLivesNow = halfLivesSinceLastDose(m, now);
       const bucket = Math.floor(halfLivesNow);
       if (bucket > st.lastWholeBucket) {
@@ -427,15 +403,11 @@ export function HalflifeApp() {
     }
   }, [notifPermission, measurements, now]);
 
-  // Drag-and-drop : pointer (mouse/touch) avec activation à 5px pour ne pas
-  // déclencher sur un simple tap, plus support clavier pour l'accessibilité.
+  /* ── Drag-and-drop ── */
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -447,21 +419,36 @@ export function HalflifeApp() {
     });
   }
 
+  /* ── Form actions ── */
+  function rememberName(value: string) {
+    setNameHistory((prev) => {
+      const lower = value.toLowerCase();
+      const filtered = prev.filter((x) => x.toLowerCase() !== lower);
+      const next = [value, ...filtered].slice(0, NAME_HISTORY_MAX);
+      try {
+        localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
+
   function add(e: React.FormEvent) {
     e.preventDefault();
     const halfValue = Number.parseFloat(halfLife);
     const doseValue = Number.parseFloat(dose);
     const trimmed = name.trim();
     if (!trimmed) {
-      setError("Indiquez le nom de la molécule.");
+      setError("Indique le nom de la molécule.");
       return;
     }
     if (!Number.isFinite(halfValue) || halfValue <= 0) {
-      setError("La demi-vie doit être un nombre strictement positif.");
+      setError("Demi-vie invalide.");
       return;
     }
     if (!Number.isFinite(doseValue) || doseValue <= 0) {
-      setError("La dose initiale doit être un nombre strictement positif.");
+      setError("Dose initiale invalide.");
       return;
     }
     setError(null);
@@ -489,15 +476,11 @@ export function HalflifeApp() {
     notificationStateRef.current.delete(id);
     setMeasurements((prev) => prev.filter((m) => m.id !== id));
   }
-
   function clearAll() {
     notificationStateRef.current.clear();
     setMeasurements([]);
   }
-
   function addDose(id: string, amount: number) {
-    // Reset le tracker pour cette mesure : la dernière dose est l'instant 0,
-    // l'élimination n'est plus atteinte.
     notificationStateRef.current.set(id, {
       lastWholeBucket: 0,
       eliminationNotified: false,
@@ -510,334 +493,679 @@ export function HalflifeApp() {
       ),
     );
   }
+  function applySuggestion(meta: MoleculeMeta) {
+    setName(meta.name);
+    setHalfLife(String(meta.halfLife));
+    setUnit(meta.unit);
+  }
+
+  /* ── Stats ── */
+  let totalActive = 0;
+  let totalEliminated = 0;
+  for (const m of measurements) {
+    if (isMeasurementFinished(m, now)) totalEliminated++;
+    else totalActive++;
+  }
+
+  const recognized = lookupMolecule(name);
+  const suggestions = getSuggestedMolecules();
 
   return (
-    <main className="flex flex-1 flex-col items-center px-4 py-10 sm:px-6 sm:py-16 lg:py-20">
-      <div className="w-full max-w-4xl space-y-10 sm:space-y-12 lg:max-w-5xl lg:space-y-16 xl:max-w-6xl">
-        {/* ────── HERO ────── */}
-        <header className="space-y-4 text-center sm:text-left">
-          <span className="inline-flex items-center gap-2 rounded-sm border border-[var(--neon-pink)]/60 bg-[color-mix(in_oklch,var(--neon-pink),transparent_88%)] px-3 py-1 font-mono text-[0.65rem] uppercase tracking-[0.25em] text-[var(--neon-pink)] [text-shadow:0_0_8px_color-mix(in_oklch,var(--neon-pink),transparent_30%)] shadow-[0_0_12px_color-mix(in_oklch,var(--neon-pink),transparent_70%)] sm:text-xs">
-            <ActivityIcon className="size-3" /> SYS://halflife.exe
+    <div className="hl-app">
+      {/* ── TOPBAR ───────────────────────────────────────────── */}
+      <header className="hl-topbar">
+        <div className="topbar-brand">
+          <span className="logo" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="6" cy="6" r="2" />
+              <circle cx="18" cy="6" r="2" />
+              <circle cx="6" cy="18" r="2" />
+              <circle cx="18" cy="18" r="2" />
+              <circle cx="12" cy="12" r="2" />
+              <line x1="6" y1="6" x2="12" y2="12" />
+              <line x1="18" y1="6" x2="12" y2="12" />
+              <line x1="12" y1="12" x2="6" y2="18" />
+              <line x1="12" y1="12" x2="18" y2="18" />
+            </svg>
           </span>
-          <h1 className="font-heading text-[clamp(1.75rem,8vw,4.5rem)] font-black uppercase leading-[0.95] tracking-tight">
-            {/* Texte sémantique pour les crawlers et lecteurs d'écran */}
-            <span className="sr-only">
-              Halflife — Calculateur de demi-vie pharmacocinétique en temps
-              réel pour médicaments et molécules
-            </span>
-            <span
-              aria-hidden="true"
-              className="block text-[var(--neon-white)] [text-shadow:0_0_10px_color-mix(in_oklch,var(--neon-pink),transparent_25%),0_0_24px_color-mix(in_oklch,var(--neon-pink),transparent_55%),0_0_48px_color-mix(in_oklch,var(--neon-purple),transparent_55%)]"
-            >
-              HALF—LIFE
-            </span>
-            <span
-              aria-hidden="true"
-              className="mt-2 block bg-gradient-to-r from-[var(--neon-pink)] via-[var(--neon-purple)] to-[var(--neon-cyan)] bg-clip-text text-transparent"
-            >
-              CYBER—DECAY
-            </span>
-          </h1>
-          <p className="mx-auto max-w-2xl font-mono text-sm text-[oklch(0.85_0.05_310)] sm:mx-0 sm:text-base lg:text-lg">
-            &gt; Lance une mesure pour suivre l&apos;élimination d&apos;une
-            molécule en temps réel. Le taux sanguin et le nombre de demi-vies
-            écoulées sont mis à jour chaque seconde.
-          </p>
-          {/* Paragraphe SEO indexable, invisible à l'écran. Concentre les
-              mots-clés que la copie hero (stylée) ne contient pas. */}
-          <p className="sr-only">
-            Halflife est un calculateur de demi-vie pharmacocinétique en
-            ligne, gratuit et accessible. Suivez en temps réel la
-            concentration sanguine restante d&apos;un médicament : cinétique
-            d&apos;élimination, demi-vie biologique, doses cumulées,
-            notifications de chaque demi-vie franchie. Calculs exacts via
-            arithmétique BigNumber (mathjs, 50 chiffres significatifs).
-            Données persistées localement dans le navigateur. Interface
-            responsive mobile, tablette et desktop.
-          </p>
-        </header>
-
-        {/* ────── BANDEAU NOTIFICATIONS ────── */}
-        {notifPermission === "default" && (
-          <section
-            aria-label="Activer les notifications"
-            className="flex flex-col items-start gap-4 rounded-md border border-[var(--neon-pink)]/40 bg-card/60 p-4 shadow-[0_0_20px_color-mix(in_oklch,var(--neon-pink),transparent_80%),inset_0_0_30px_color-mix(in_oklch,var(--neon-pink),transparent_85%)] backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between sm:p-5"
-          >
-            <div className="flex items-start gap-3 sm:items-center">
-              <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-sm border border-[var(--neon-pink)]/60 bg-[color-mix(in_oklch,var(--neon-pink),transparent_85%)] text-[var(--neon-pink)] shadow-[0_0_10px_color-mix(in_oklch,var(--neon-pink),transparent_60%)]">
-                <BellIcon className="size-4" />
-              </span>
-              <div className="min-w-0">
-                <p className="font-mono text-xs uppercase tracking-[0.25em] text-[var(--neon-pink)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-pink),transparent_40%)]">
-                  alertes système
-                </p>
-                <p className="mt-1 text-sm text-[oklch(0.85_0.05_310)]">
-                  Active les notifications pour être prévenu à chaque demi-vie
-                  écoulée et quand une molécule est entièrement éliminée.
-                </p>
-              </div>
-            </div>
-            <Button
-              type="button"
-              size="lg"
-              onClick={requestNotifications}
-              className="w-full sm:w-auto"
-            >
-              <BellIcon /> Activer
-            </Button>
-          </section>
-        )}
-
-        {notifPermission === "denied" && (
-          <section
-            role="status"
-            className="flex items-center gap-3 rounded-md border border-[var(--neon-cyan)]/30 bg-card/40 px-4 py-3 font-mono text-xs text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_50%)] backdrop-blur-sm"
-          >
-            <BellOffIcon className="size-4" />
-            <span className="uppercase tracking-widest">
-              notifications bloquées par le navigateur — autorisez
-              halflife.exe dans les réglages pour les recevoir
-            </span>
-          </section>
-        )}
-
-        {/* ────── FORMULAIRE ────── */}
-        <section aria-labelledby="section-form">
-          <header className="flex items-baseline justify-between border-b border-[var(--neon-pink)]/30 pb-3">
-            <h2
-              id="section-form"
-              className="font-mono text-xs uppercase tracking-[0.3em] text-[var(--neon-pink)] [text-shadow:0_0_8px_color-mix(in_oklch,var(--neon-pink),transparent_30%)]"
-            >
-              <span className="sr-only">
-                Démarrer une nouvelle mesure de demi-vie
-              </span>
-              <span aria-hidden="true">▌ 01 // nouvelle_mesure</span>
-            </h2>
-          </header>
-
-          <form
-            onSubmit={add}
-            noValidate
-            className="mt-5 space-y-5 rounded-md border border-[var(--neon-purple)]/30 bg-card/60 p-4 shadow-[inset_0_0_30px_color-mix(in_oklch,var(--neon-purple),transparent_85%)] backdrop-blur-sm sm:p-6 lg:p-8"
-          >
-            <div className="grid gap-5 md:grid-cols-[1fr_auto]">
-              <div className="space-y-2">
-                <Label
-                  htmlFor={nameId}
-                  className="font-mono text-xs uppercase tracking-widest text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_50%)]"
-                >
-                  Molécule
-                </Label>
-                <Input
-                  id={nameId}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="ex. Paracétamol, caféine, ibuprofène…"
-                  className="h-12 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40"
-                  autoComplete="off"
-                  list={nameHistory.length > 0 ? datalistId : undefined}
-                />
-                {nameHistory.length > 0 && (
-                  <datalist id={datalistId}>
-                    {nameHistory.map((n) => (
-                      <option key={n} value={n} />
-                    ))}
-                  </datalist>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label
-                  htmlFor={halfId}
-                  className="font-mono text-xs uppercase tracking-widest text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_50%)]"
-                >
-                  Demi-vie
-                </Label>
-                <div className="flex items-stretch gap-2">
-                  <Input
-                    id={halfId}
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    step="any"
-                    value={halfLife}
-                    onChange={(e) => setHalfLife(e.target.value)}
-                    placeholder="ex. 2"
-                    className="h-12 w-full min-w-0 flex-1 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40 md:w-32 md:flex-none"
-                  />
-                  <div
-                    role="radiogroup"
-                    aria-label="Unité de la demi-vie"
-                    className="inline-flex items-stretch overflow-hidden rounded-md border border-[var(--neon-cyan)]/40"
-                  >
-                    {(["s", "min", "h"] as const).map((u) => {
-                      const active = unit === u;
-                      return (
-                        <button
-                          key={u}
-                          type="button"
-                          role="radio"
-                          aria-checked={active}
-                          onClick={() => setUnit(u)}
-                          className={
-                            "px-3 font-mono text-xs uppercase tracking-widest transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--neon-cyan)] " +
-                            (active
-                              ? "bg-[var(--neon-cyan)] text-[oklch(0.10_0.04_295)] shadow-[inset_0_0_12px_color-mix(in_oklch,white,transparent_60%)]"
-                              : "bg-transparent text-[var(--neon-cyan)] hover:bg-[color-mix(in_oklch,var(--neon-cyan),transparent_85%)]")
-                          }
-                        >
-                          {UNIT_LABEL[u]}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label
-                htmlFor={doseId}
-                className="font-mono text-xs uppercase tracking-widest text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_50%)]"
+          <span className="name">
+            HALFLIFE<span className="dim">.exe</span>
+          </span>
+          <span className="tag accent" style={{ marginLeft: 12 }}>
+            <span className="dot" />
+            <span>v.2.6 // pharmacokinetics</span>
+          </span>
+        </div>
+        <div className="topbar-meta">
+          <span className="kbd">
+            <span className="status-dot" />
+            {anyActive ? `${totalActive} sys.live` : "idle"}
+          </span>
+          <div className="theme-toggle" role="radiogroup" aria-label="Thème">
+            {(
+              [
+                {
+                  v: "light",
+                  label: "LIGHT",
+                  icon: (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="4" />
+                      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                    </svg>
+                  ),
+                },
+                {
+                  v: "auto",
+                  label: "AUTO",
+                  icon: (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M12 3a9 9 0 0 0 0 18" fill="currentColor" />
+                    </svg>
+                  ),
+                },
+                {
+                  v: "dark",
+                  label: "DARK",
+                  icon: (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                    </svg>
+                  ),
+                },
+              ] as const
+            ).map((b) => (
+              <button
+                key={b.v}
+                type="button"
+                className={theme === b.v ? "active" : ""}
+                onClick={() => setTheme(b.v)}
+                aria-pressed={theme === b.v}
               >
-                Dose initiale
-              </Label>
-              <div className="flex items-stretch gap-2">
-                <Input
-                  id={doseId}
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="any"
-                  value={dose}
-                  onChange={(e) => setDose(e.target.value)}
-                  placeholder="ex. 1000"
-                  className="h-12 w-full min-w-0 flex-1 border-[var(--neon-pink)]/40 bg-[oklch(0.08_0.04_295)/60%] text-base text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-pink)] focus-visible:ring-[var(--neon-pink)]/40 md:w-40 md:flex-none"
-                />
-                <div
-                  role="radiogroup"
-                  aria-label="Unité de la dose"
-                  className="inline-flex items-stretch overflow-hidden rounded-md border border-[var(--neon-pink)]/40"
-                >
-                  {(["ug", "mg", "g"] as const).map((u) => {
-                    const active = massUnit === u;
-                    return (
-                      <button
-                        key={u}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        onClick={() => setMassUnit(u)}
-                        className={
-                          "px-3 font-mono text-xs uppercase tracking-widest transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--neon-pink)] " +
-                          (active
-                            ? "bg-[var(--neon-pink)] text-[oklch(0.10_0.04_295)] shadow-[inset_0_0_12px_color-mix(in_oklch,white,transparent_60%)]"
-                            : "bg-transparent text-[var(--neon-pink)] hover:bg-[color-mix(in_oklch,var(--neon-pink),transparent_85%)]")
-                        }
-                      >
-                        {MASS_LABEL[u]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+                {b.icon}
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
 
-            {error && (
-              <div
-                role="alert"
-                className="rounded-md border border-[oklch(0.65_0.30_25)]/60 bg-[oklch(0.65_0.30_25)]/10 px-4 py-2 font-mono text-sm text-[oklch(0.85_0.20_25)] [text-shadow:0_0_6px_color-mix(in_oklch,oklch(0.65_0.30_25),transparent_40%)]"
-              >
-                {error}
-              </div>
-            )}
+      {/* ── SIDEBAR ──────────────────────────────────────────── */}
+      <aside className="hl-sidebar" aria-label="Nouvelle mesure">
+        <div className="section-label">
+          <span className="glow-text">▌ 01 // nouvelle_mesure</span>
+          <span className="num">[NEW]</span>
+        </div>
 
-            <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
-              <Button type="submit" size="lg" className="sm:flex-1">
-                <ZapIcon /> Mesurer
-              </Button>
-              {measurements.length > 0 && (
-                <Button
-                  type="button"
-                  variant="outline-cyan"
-                  size="lg"
-                  onClick={clearAll}
-                >
-                  <TrashIcon /> Tout effacer
-                </Button>
+        <form onSubmit={add} noValidate>
+          <div className="field">
+            <div className="field-label">
+              <span>▌ Molécule</span>
+              {recognized && (
+                <span className="hint" style={{ color: "var(--accent-bright)" }}>
+                  ↻ {recognized.name} reconnu
+                </span>
               )}
             </div>
-          </form>
-        </section>
+            <input
+              id={nameId}
+              className="tx"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="ex. Caféine, paracétamol…"
+              autoComplete="off"
+              list={nameHistory.length > 0 ? datalistId : undefined}
+            />
+            {nameHistory.length > 0 && (
+              <datalist id={datalistId}>
+                {nameHistory.map((n) => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
+            )}
+          </div>
 
-        {/* ────── LISTE DES MESURES ────── */}
-        <section aria-labelledby="section-measurements">
-          <header className="flex items-baseline justify-between border-b border-[var(--neon-cyan)]/30 pb-3">
-            <h2
-              id="section-measurements"
-              className="font-mono text-xs uppercase tracking-[0.3em] text-[var(--neon-cyan)] [text-shadow:0_0_8px_color-mix(in_oklch,var(--neon-cyan),transparent_30%)]"
-            >
-              <span className="sr-only">
-                Mesures actives — décroissance suivie en temps réel
-              </span>
-              <span aria-hidden="true">▌ 02 // mesures_actives</span>
-            </h2>
-            <span className="font-mono text-xs text-muted-foreground">
-              [{measurements.length.toString().padStart(2, "0")}] live
-            </span>
-          </header>
-
-          {measurements.length === 0 ? (
-            <div className="mt-5 rounded-md border border-dashed border-[var(--neon-purple)]/40 bg-card/30 p-6 text-center backdrop-blur-sm sm:p-10">
-              <BeakerIcon className="mx-auto size-10 text-[var(--neon-purple)] [filter:drop-shadow(0_0_10px_color-mix(in_oklch,var(--neon-purple),transparent_30%))]" />
-              <p className="mt-3 font-mono text-sm uppercase tracking-widest text-muted-foreground">
-                aucune mesure en cours
-              </p>
-              <p className="mt-1 font-mono text-xs text-muted-foreground">
-                renseignez une molécule et cliquez sur{" "}
-                <span className="text-[var(--neon-pink)]">[ MESURER ]</span>
-              </p>
+          <div className="field">
+            <div className="field-label">
+              <span>▌ Demi-vie (t½)</span>
             </div>
-          ) : (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext
-                items={measurements.map((m) => m.id)}
-                strategy={rectSortingStrategy}
+            <div className="row-units">
+              <input
+                id={halfId}
+                className="tx"
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                value={halfLife}
+                onChange={(e) => setHalfLife(e.target.value)}
+                placeholder="ex. 5"
+              />
+              <div
+                className="unit-toggle"
+                role="radiogroup"
+                aria-label="Unité de la demi-vie"
               >
-                <ul
-                  aria-label={`${measurements.length} mesure${measurements.length > 1 ? "s" : ""} de demi-vie en cours`}
-                  className="mt-5 grid gap-4 lg:grid-cols-2"
-                >
-                  {measurements.map((m) => (
-                    <MeasurementRow
-                      key={m.id}
-                      m={m}
-                      now={now}
-                      onRemove={remove}
-                      onAddDose={addDose}
-                    />
-                  ))}
-                </ul>
-              </SortableContext>
-            </DndContext>
-          )}
-        </section>
+                {(["s", "min", "h"] as const).map((u) => (
+                  <button
+                    key={u}
+                    type="button"
+                    role="radio"
+                    aria-checked={unit === u}
+                    className={unit === u ? "active" : ""}
+                    onClick={() => setUnit(u)}
+                  >
+                    {UNIT_LABEL[u]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
 
-        <footer className="border-t border-[var(--neon-pink)]/20 pt-6 text-center font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          {"// C(t) = C₀ × (½)^(t / t½) //"}
-        </footer>
-      </div>
-    </main>
+          <div className="field">
+            <div className="field-label">
+              <span>▌ Dose initiale</span>
+            </div>
+            <div className="row-units">
+              <input
+                id={doseId}
+                className="tx"
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                value={dose}
+                onChange={(e) => setDose(e.target.value)}
+                placeholder="ex. 200"
+              />
+              <div
+                className="unit-toggle"
+                role="radiogroup"
+                aria-label="Unité de la dose"
+              >
+                {(["ug", "mg", "g"] as const).map((u) => (
+                  <button
+                    key={u}
+                    type="button"
+                    role="radio"
+                    aria-checked={massUnit === u}
+                    className={massUnit === u ? "active" : ""}
+                    onClick={() => setMassUnit(u)}
+                  >
+                    {MASS_LABEL[u]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <div role="alert" className="error-msg">
+              ⚠ {error}
+            </div>
+          )}
+
+          <div className="actions">
+            <button type="submit" className="hl-btn primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+              Lancer la mesure
+            </button>
+            {measurements.length > 0 && (
+              <button type="button" className="hl-btn ghost" onClick={clearAll}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                </svg>
+                Tout effacer
+              </button>
+            )}
+          </div>
+        </form>
+
+        {/* SUGGESTIONS */}
+        <div className="suggestions">
+          <div className="section-label" style={{ borderBottom: "none", marginBottom: 6 }}>
+            <span>▌ molécules connues</span>
+            <span className="num">[{suggestions.length}]</span>
+          </div>
+          <p className="kbd" style={{ margin: "0 0 8px", fontSize: 9 }}>
+            cliquez pour pré-remplir
+          </p>
+          <div className="suggestions-grid">
+            {suggestions.map((meta) => (
+              <button
+                key={meta.key}
+                type="button"
+                className="suggestion"
+                onClick={() => applySuggestion(meta)}
+              >
+                <span className="mol-mini">
+                  <MoleculeIcon name={meta.name} />
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="label">{meta.name}</span>
+                  <span className="meta">
+                    t½ {meta.halfLife}
+                    {meta.unit}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* MODÈLE */}
+        <div
+          style={{
+            marginTop: 24,
+            paddingTop: 16,
+            borderTop: "1px solid var(--border)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 10,
+            color: "var(--fg-mute)",
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            lineHeight: 1.8,
+          }}
+        >
+          <div>{"// modèle"}</div>
+          <div
+            style={{
+              color: "var(--fg-dim)",
+              marginTop: 4,
+              letterSpacing: "0.05em",
+              textTransform: "none",
+              fontSize: 11,
+            }}
+          >
+            C(t) = Σ Cᵢ · (½)^((t − tᵢ) / t½)
+          </div>
+        </div>
+      </aside>
+
+      {/* ── MAIN ─────────────────────────────────────────────── */}
+      <main className="hl-main">
+        <div className="main-head">
+          <div>
+            {/* h1 SEO complet en sr-only ; copie visible décorative */}
+            <h1 className="glow-text">
+              <span className="sr-only">
+                Halflife — Calculateur de demi-vie pharmacocinétique en temps
+                réel pour médicaments et molécules
+              </span>
+              <span aria-hidden="true">
+                Tableau de bord — décroissance temps réel
+              </span>
+            </h1>
+            <div className="sub">
+              ▸ pharmacocinétique · 1 Hz · BigNumber 50 chiffres
+            </div>
+          </div>
+          <div className="main-stats">
+            <div className="stat">
+              <div className="v">{String(totalActive).padStart(2, "0")}</div>
+              <div className="l">Actives</div>
+            </div>
+            <div className="stat cyan">
+              <div className="v">{String(totalEliminated).padStart(2, "0")}</div>
+              <div className="l">Éliminées</div>
+            </div>
+            <div className="stat pink">
+              <div className="v">{String(measurements.length).padStart(2, "0")}</div>
+              <div className="l">Total</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Bandeau notifs */}
+        {notifPermission === "default" && (
+          <div className="notif-bar" role="status">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <span className="txt">
+              Active les <b>notifications</b> pour être alerté à chaque demi-vie
+              écoulée et quand une molécule est entièrement éliminée.
+            </span>
+            <button
+              type="button"
+              className="hl-btn primary sm"
+              onClick={requestNotifications}
+            >
+              Activer
+            </button>
+          </div>
+        )}
+        {notifPermission === "denied" && (
+          <div className="notif-bar" role="status" style={{ background: "transparent" }}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--cyan)" }}>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+              <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+              <path d="M18 8a6 6 0 0 0-9.91-4.6" />
+              <line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+            <span className="txt" style={{ color: "var(--cyan)" }}>
+              Notifications bloquées par le navigateur — autorise halflife.exe
+              dans les réglages.
+            </span>
+          </div>
+        )}
+
+        {measurements.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={measurements.map((m) => m.id)}
+              strategy={rectSortingStrategy}
+            >
+              <ul
+                className="cards"
+                aria-label={`${measurements.length} mesure${measurements.length > 1 ? "s" : ""} en cours`}
+              >
+                {measurements.map((m) => (
+                  <MeasurementCard
+                    key={m.id}
+                    m={m}
+                    now={now}
+                    onRemove={remove}
+                    onAddDose={addDose}
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
+        )}
+      </main>
+    </div>
   );
 }
 
-/* ── Carte de mesure : recalcule à chaque tick + permet d'ajouter une dose ─ */
+/* ──────────────────────────────────────────────────────────────────
+   EMPTY STATE
+   ────────────────────────────────────────────────────────────── */
+function EmptyState() {
+  return (
+    <div className="empty">
+      <div className="empty-art">
+        <svg
+          viewBox="0 0 220 180"
+          style={{ width: "100%", height: "100%", color: "var(--accent-bright)" }}
+          aria-hidden="true"
+        >
+          <defs>
+            <radialGradient id="empty-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="currentColor" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          <ellipse cx="110" cy="90" rx="100" ry="70" fill="url(#empty-glow)" />
+          {/* Caféine centrale géante */}
+          <g
+            transform="translate(70 50) scale(1.25)"
+            stroke="currentColor"
+            fill="none"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              filter:
+                "drop-shadow(0 0 calc(8px * var(--glow)) currentColor)",
+            }}
+          >
+            <path d="M22 28 L36 20 L50 28 L50 44 L36 52 L22 44 Z" />
+            <path d="M50 28 L66 26 L70 40 L62 46 L50 44" />
+            <path d="M24 30 L34 24" />
+            <path d="M52 30 L52 42" />
+            <path d="M36 20 L36 12" />
+            <path d="M22 44 L14 50" />
+            <path d="M62 46 L66 56" />
+          </g>
+          {/* Particules dispersées */}
+          {Array.from({ length: 12 }).map((_, i) => {
+            const ang = (i / 12) * Math.PI * 2;
+            const r = 60 + (i % 3) * 8;
+            const x = 110 + Math.cos(ang) * r;
+            const y = 90 + Math.sin(ang) * r * 0.6;
+            return (
+              <circle
+                key={i}
+                cx={x}
+                cy={y}
+                r={1 + (i % 2)}
+                fill="currentColor"
+                opacity={0.3 + (i % 3) * 0.15}
+              >
+                <animate
+                  attributeName="opacity"
+                  values="0.2;0.8;0.2"
+                  dur={`${2 + i * 0.3}s`}
+                  repeatCount="indefinite"
+                />
+              </circle>
+            );
+          })}
+        </svg>
+      </div>
+      <h2 className="glow-text">Aucune mesure en cours</h2>
+      <p>
+        renseigne une molécule à gauche et lance{" "}
+        <span className="accent">[ MESURER ]</span>
+      </p>
+      <p style={{ marginTop: 4, color: "var(--fg-mute)", fontSize: 10 }}>
+        {"// system idle · awaiting input"}
+      </p>
+    </div>
+  );
+}
 
-function MeasurementRow({
+/* ──────────────────────────────────────────────────────────────────
+   DECAY GRAPH
+   ────────────────────────────────────────────────────────────── */
+function DecayGraph({ m, now }: { m: Measurement; now: number }) {
+  const W = 400;
+  const H = 110;
+  const pad = { l: 8, r: 8, t: 12, b: 18 };
+  const halfLifeMs = m.halfLife * UNIT_MS[m.unit];
+  const start = m.doses[0].takenAt;
+  const tMin = start;
+  const tMax = start + Math.max(now - start, halfLifeMs * 4);
+  const span = Math.max(tMax - tMin, 1);
+
+  const cumTotal = m.doses.reduce((a, d) => a + d.amount, 0);
+  function conc(t: number) {
+    let r = 0;
+    for (const d of m.doses) {
+      if (t < d.takenAt) continue;
+      r += d.amount * Math.pow(0.5, (t - d.takenAt) / halfLifeMs);
+    }
+    return cumTotal > 0 ? r / cumTotal : 0;
+  }
+
+  const N = 80;
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i <= N; i++) {
+    const t = tMin + (span * i) / N;
+    const v = conc(t);
+    const x = pad.l + ((W - pad.l - pad.r) * i) / N;
+    const y = pad.t + (H - pad.t - pad.b) * (1 - v);
+    pts.push([x, y]);
+  }
+  const nowIdx = Math.min(N, Math.max(0, Math.round(((now - tMin) / span) * N)));
+  const past = pts.slice(0, nowIdx + 1).map(([x, y]) => `${x},${y}`).join(" L ");
+  const fut = pts.slice(nowIdx).map(([x, y]) => `${x},${y}`).join(" L ");
+
+  const fillPts = pts.slice(0, nowIdx + 1);
+  const fillD =
+    fillPts.length > 1
+      ? `M ${fillPts[0][0]},${H - pad.b} L ${fillPts.map(([x, y]) => `${x},${y}`).join(" L ")} L ${fillPts[fillPts.length - 1][0]},${H - pad.b} Z`
+      : "";
+
+  const nowPt = pts[nowIdx];
+  const doseMarkers = m.doses.map((d, i) => {
+    const x = pad.l + ((W - pad.l - pad.r) * (d.takenAt - tMin)) / span;
+    return { x, i };
+  });
+  const halfTicks: Array<{ x: number; k: number }> = [];
+  for (let k = 1; k <= 6; k++) {
+    const t = start + halfLifeMs * k;
+    if (t > tMax) break;
+    const x = pad.l + ((W - pad.l - pad.r) * (t - tMin)) / span;
+    halfTicks.push({ x, k });
+  }
+
+  const gradId = `decay-grad-${m.id}`;
+
+  return (
+    <div className="graph">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id={gradId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent-bright)" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <line
+          x1={pad.l}
+          x2={W - pad.r}
+          y1={H - pad.b}
+          y2={H - pad.b}
+          stroke="var(--border)"
+          strokeWidth="1"
+        />
+        <line
+          x1={pad.l}
+          x2={W - pad.r}
+          y1={pad.t + (H - pad.t - pad.b) * 0.5}
+          y2={pad.t + (H - pad.t - pad.b) * 0.5}
+          stroke="var(--border)"
+          strokeWidth="0.5"
+          strokeDasharray="2 3"
+        />
+        {halfTicks.map((t) => (
+          <g key={t.k}>
+            <line
+              x1={t.x}
+              x2={t.x}
+              y1={pad.t}
+              y2={H - pad.b}
+              stroke="var(--border)"
+              strokeWidth="0.5"
+              strokeDasharray="2 4"
+              opacity="0.7"
+            />
+            <text
+              x={t.x}
+              y={H - 4}
+              textAnchor="middle"
+              fontFamily="var(--font-mono)"
+              fontSize="8"
+              fill="var(--fg-mute)"
+              letterSpacing="0.1em"
+            >
+              {t.k}t½
+            </text>
+          </g>
+        ))}
+        {fillD && <path d={fillD} fill={`url(#${gradId})`} />}
+        {past && (
+          <path
+            d={`M ${past}`}
+            fill="none"
+            stroke="var(--accent-bright)"
+            strokeWidth="1.6"
+            style={{
+              filter:
+                "drop-shadow(0 0 calc(4px * var(--glow)) var(--accent))",
+            }}
+          />
+        )}
+        {fut && (
+          <path
+            d={`M ${fut}`}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            opacity="0.5"
+          />
+        )}
+        {doseMarkers.map((d) => (
+          <g key={d.i}>
+            <line
+              x1={d.x}
+              x2={d.x}
+              y1={pad.t - 2}
+              y2={H - pad.b}
+              stroke="var(--pink)"
+              strokeWidth="0.8"
+              opacity="0.55"
+            />
+            <circle
+              cx={d.x}
+              cy={pad.t}
+              r="2.5"
+              fill="var(--pink)"
+              style={{ filter: "drop-shadow(0 0 4px var(--pink))" }}
+            />
+          </g>
+        ))}
+        {nowPt && (
+          <g>
+            <line
+              x1={nowPt[0]}
+              x2={nowPt[0]}
+              y1={pad.t}
+              y2={H - pad.b}
+              stroke="var(--cyan)"
+              strokeWidth="1"
+            />
+            <circle
+              cx={nowPt[0]}
+              cy={nowPt[1]}
+              r="3"
+              fill="var(--cyan)"
+              style={{ filter: "drop-shadow(0 0 6px var(--cyan))" }}
+            />
+            <circle
+              cx={nowPt[0]}
+              cy={nowPt[1]}
+              r="6"
+              fill="none"
+              stroke="var(--cyan)"
+              strokeWidth="0.5"
+              opacity="0.6"
+            >
+              <animate attributeName="r" values="3;9;3" dur="2s" repeatCount="indefinite" />
+              <animate attributeName="opacity" values="0.7;0;0.7" dur="2s" repeatCount="indefinite" />
+            </circle>
+          </g>
+        )}
+      </svg>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   MEASUREMENT CARD
+   ────────────────────────────────────────────────────────────── */
+function MeasurementCard({
   m,
   now,
   onRemove,
@@ -848,11 +1176,9 @@ function MeasurementRow({
   onRemove: (id: string) => void;
   onAddDose: (id: string, amount: number) => void;
 }) {
-  const [extraDose, setExtraDose] = useState("");
+  const [extra, setExtra] = useState("");
   const [doseError, setDoseError] = useState<string | null>(null);
 
-  // Drag-and-drop : seule la poignée est draggable, les autres contrôles
-  // (poubelle, ajouter dose, etc.) restent cliquables normalement.
   const {
     attributes,
     listeners,
@@ -861,6 +1187,7 @@ function MeasurementRow({
     transition,
     isDragging,
   } = useSortable({ id: m.id });
+
   const sortableStyle: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -868,198 +1195,141 @@ function MeasurementRow({
 
   const startedAt = m.doses[0].takenAt;
   const decay = computeDecay(m, now);
-
-  // Sous le seuil d'élimination → on fige sur 0 (au lieu d'afficher 1e-15 mg)
   const finished = decay.fraction.lt(ELIMINATION_THRESHOLD);
-  const remainingDose = finished ? 0 : decay.remaining.toNumber();
-  const cumulativeDose = decay.cumulative.toNumber();
-
-  // Référence "100 %" = concentration au moment de la dernière prise.
-  // → après chaque ajout de dose, le taux affiché remonte à 100 %.
-  const peakAtLastDose = computePeakAtLastDose(m);
-  const displayFraction = peakAtLastDose.gt(0)
-    ? decay.remaining.div(peakAtLastDose)
-    : BN_ZERO;
-  const remainingPct = finished
+  const remaining = finished ? 0 : decay.remaining.toNumber();
+  const cumulative = decay.cumulative.toNumber();
+  const peak = computePeakAtLastDose(m);
+  const displayFraction = peak.gt(0) ? decay.remaining.div(peak) : BN_ZERO;
+  const displayPct = finished
     ? 0
     : (displayFraction.times(BN_HUNDRED) as BigNumber).toNumber();
+  const halfLivesLast = halfLivesSinceLastDose(m, now);
+  const decayProgress = 1 - decay.fraction.toNumber();
 
-  // Demi-vies écoulées depuis la dernière dose (repart de 0 à chaque ajout).
-  const halfLivesSinceLast = halfLivesSinceLastDose(m, now);
-
-  // Couleur du glow : éteint quand terminé, sinon pink → purple → cyan
-  const glowColor = finished
-    ? "var(--neon-cyan)"
-    : remainingPct > 50
-      ? "var(--neon-pink)"
-      : remainingPct > 12.5
-        ? "var(--neon-purple)"
-        : "var(--neon-cyan)";
-
-  function handleAddDose(e: React.FormEvent) {
+  function handleAdd(e: React.FormEvent) {
     e.preventDefault();
-    const v = Number.parseFloat(extraDose);
+    const v = Number.parseFloat(extra);
     if (!Number.isFinite(v) || v <= 0) {
       setDoseError("Dose invalide");
       return;
     }
     setDoseError(null);
     onAddDose(m.id, v);
-    setExtraDose("");
+    setExtra("");
   }
 
   return (
     <li
       ref={setNodeRef}
       className={
-        "group relative overflow-hidden rounded-md border bg-card/70 backdrop-blur-sm transition-shadow " +
-        (isDragging
-          ? "z-50 border-[var(--neon-purple)] opacity-90 ring-2 ring-[var(--neon-purple)]/60"
-          : finished
-            ? "border-[var(--neon-cyan)]/20 opacity-80"
-            : "border-[var(--neon-pink)]/30")
+        "hl-card " +
+        (isDragging ? "dragging " : "") +
+        (finished ? "finished" : "glow")
       }
-      style={{
-        ...sortableStyle,
-        boxShadow: isDragging
-          ? "0 0 30px color-mix(in oklch, var(--neon-purple), transparent 50%)"
-          : finished
-            ? "0 0 12px color-mix(in oklch, var(--neon-cyan), transparent 85%)"
-            : `0 0 20px color-mix(in oklch, ${glowColor}, transparent 75%)`,
-      }}
+      style={sortableStyle}
     >
       <article aria-label={`Mesure de ${m.name}`}>
-        {/* En-tête : poignée drag + nom + badge éliminé + bouton supprimer */}
-        <div className="flex items-center justify-between gap-2 border-b border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/60%] px-3 py-3 sm:px-4">
+        <header className="card-head">
           <button
             type="button"
             {...attributes}
             {...listeners}
             aria-label={`Réordonner la mesure ${m.name}`}
-            className="-ml-1 flex h-9 w-7 shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-[var(--neon-purple)]/70 transition-colors hover:bg-[color-mix(in_oklch,var(--neon-purple),transparent_85%)] hover:text-[var(--neon-purple)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--neon-purple)] active:cursor-grabbing"
+            className="drag-handle"
           >
-            <GripVerticalIcon className="size-4" />
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="9" cy="6" r="1" />
+              <circle cx="15" cy="6" r="1" />
+              <circle cx="9" cy="12" r="1" />
+              <circle cx="15" cy="12" r="1" />
+              <circle cx="9" cy="18" r="1" />
+              <circle cx="15" cy="18" r="1" />
+            </svg>
           </button>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3
-                className="truncate font-heading text-lg font-bold uppercase tracking-wide text-[var(--neon-white)] sm:text-xl"
-                style={{
-                  textShadow: finished
-                    ? "none"
-                    : `0 0 8px color-mix(in oklch, ${glowColor}, transparent 35%), 0 0 18px color-mix(in oklch, ${glowColor}, transparent 60%)`,
-                }}
-              >
-                {m.name}
-              </h3>
-              {finished && (
-                <span className="shrink-0 rounded-sm border border-[var(--neon-cyan)]/60 bg-[color-mix(in_oklch,var(--neon-cyan),transparent_85%)] px-2 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.25em] text-[var(--neon-cyan)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-cyan),transparent_40%)]">
-                  ◉ éliminé
-                </span>
-              )}
-            </div>
-            <p className="mt-0.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
-              t½ = {m.halfLife} {UNIT_LABEL[m.unit]} · {m.doses.length} prise
-              {m.doses.length > 1 ? "s" : ""} · cumul ={" "}
-              {formatDose(cumulativeDose)} {MASS_LABEL[m.massUnit]}
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => onRemove(m.id)}
-            aria-label={`Supprimer la mesure de ${m.name}`}
-          >
-            <TrashIcon />
-          </Button>
-        </div>
 
-        {/* Corps : quantité + taux + n × t½ + barre + ajout dose */}
-        <div className="space-y-4 p-4 sm:p-5">
-          <div>
-            <p className="font-mono text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">
-              Quantité restante dans le sang
-            </p>
-            <p
-              className="mt-1 break-all font-mono text-4xl font-bold tabular-nums sm:text-5xl lg:text-5xl xl:text-6xl"
-              style={{
-                color: glowColor,
-                textShadow: `0 0 10px color-mix(in oklch, ${glowColor}, transparent 25%), 0 0 28px color-mix(in oklch, ${glowColor}, transparent 50%)`,
-              }}
+          <div className="mol-icon">
+            <MoleculeIcon name={m.name} decayProgress={decayProgress} />
+          </div>
+
+          <div className="title-block">
+            <h3 className="glow-text">
+              {m.name}
+              {finished && <span className="badge-finished">◉ éliminé</span>}
+            </h3>
+            <div className="meta">
+              t½ = {m.halfLife}
+              {UNIT_LABEL[m.unit]}
+              <span className="sep">·</span>
+              {m.doses.length} prise{m.doses.length > 1 ? "s" : ""}
+              <span className="sep">·</span>
+              cumul {formatDose(cumulative)} {MASS_LABEL[m.massUnit]}
+            </div>
+          </div>
+
+          <div className="actions-h">
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={() => onRemove(m.id)}
+              aria-label={`Supprimer la mesure de ${m.name}`}
             >
-              {formatDose(remainingDose)}
-              <span className="ml-2 text-2xl text-muted-foreground">
-                {MASS_LABEL[m.massUnit]}
-              </span>
-            </p>
-            <p className="mt-1 font-mono text-xs text-muted-foreground">
-              sur {formatDose(cumulativeDose)} {MASS_LABEL[m.massUnit]}{" "}
-              administré{m.doses.length > 1 ? "s au total" : ""}
-            </p>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
           </div>
+        </header>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="font-mono text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">
-                Taux sanguin
-              </p>
-              <p
-                className="mt-1 font-mono text-2xl font-bold tabular-nums sm:text-3xl xl:text-4xl"
-                style={{
-                  color: glowColor,
-                  textShadow: `0 0 8px color-mix(in oklch, ${glowColor}, transparent 30%), 0 0 22px color-mix(in oklch, ${glowColor}, transparent 55%)`,
-                }}
-              >
-                {remainingPct.toFixed(2)}
-                <span className="ml-1 text-lg text-muted-foreground">%</span>
-              </p>
+        <div className="card-body">
+          <div className="metric-block">
+            <div className="l">▌ Quantité restante dans le sang</div>
+            <div className="v">
+              {formatDose(remaining)}
+              <span className="u">{MASS_LABEL[m.massUnit]}</span>
             </div>
-            <div>
-              <p className="font-mono text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">
-                Demi-vies écoulées
-                {m.doses.length > 1 && (
-                  <span className="ml-1 normal-case tracking-normal text-[0.6rem] text-[var(--neon-purple)]">
-                    (depuis dernière dose)
-                  </span>
-                )}
-              </p>
-              <p
-                className="mt-1 font-mono text-2xl font-bold tabular-nums sm:text-3xl xl:text-4xl"
-                style={{
-                  color: "var(--neon-cyan)",
-                  textShadow:
-                    "0 0 8px color-mix(in oklch, var(--neon-cyan), transparent 30%), 0 0 22px color-mix(in oklch, var(--neon-cyan), transparent 55%)",
-                }}
-              >
-                {halfLivesSinceLast.toFixed(2)}
-                <span className="ml-1 text-lg text-muted-foreground">
-                  × t½
-                </span>
-              </p>
+            <div className="sub">
+              sur {formatDose(cumulative)} {MASS_LABEL[m.massUnit]} administré
+              {m.doses.length > 1 ? "s" : ""}
             </div>
           </div>
 
-          {/* Barre de décroissance */}
-          <div>
+          <DecayGraph m={m} now={now} />
+
+          <div className="mini-stats">
+            <div className="mini-stat accent">
+              <div className="l">Taux sanguin</div>
+              <div className="v">
+                {displayPct.toFixed(2)}
+                <span className="u">%</span>
+              </div>
+            </div>
+            <div className="mini-stat cyan">
+              <div className="l">
+                Demi-vies écoulées{m.doses.length > 1 ? " ↻" : ""}
+              </div>
+              <div className="v">
+                {halfLivesLast.toFixed(2)}
+                <span className="u">× t½</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bar-wrap">
             <div
-              className="h-3 w-full overflow-hidden rounded-full border border-[var(--neon-pink)]/20 bg-[oklch(0.08_0.04_295)]"
+              className="bar"
               role="progressbar"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={Number(remainingPct.toFixed(2))}
+              aria-valuenow={Number(displayPct.toFixed(2))}
               aria-label={`Taux restant pour ${m.name}`}
             >
               <div
-                className="h-full rounded-full transition-[width] duration-1000 ease-linear"
-                style={{
-                  width: `${Math.max(Math.min(remainingPct, 100), 0)}%`,
-                  background: `linear-gradient(90deg, ${glowColor}, var(--neon-purple))`,
-                  boxShadow: `0 0 10px ${glowColor}, 0 0 22px color-mix(in oklch, ${glowColor}, transparent 50%)`,
-                }}
+                className="fill"
+                style={{ width: `${Math.max(0, Math.min(100, displayPct))}%` }}
               />
             </div>
-            <div className="mt-2 flex justify-between font-mono text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+            <div className="bar-meta">
               <span>écoulé : {formatElapsed(now - startedAt)}</span>
               <span>
                 démarré : {new Date(startedAt).toLocaleTimeString("fr-FR")}
@@ -1067,25 +1337,17 @@ function MeasurementRow({
             </div>
           </div>
 
-          {/* Historique des prises */}
           {m.doses.length > 1 && (
-            <details className="rounded-md border border-[var(--neon-purple)]/20 bg-[oklch(0.08_0.04_295)/40%] p-3">
-              <summary className="cursor-pointer font-mono text-[0.65rem] uppercase tracking-[0.25em] text-[var(--neon-purple)] [text-shadow:0_0_6px_color-mix(in_oklch,var(--neon-purple),transparent_50%)]">
-                ▸ historique des {m.doses.length} prises
-              </summary>
-              <ul className="mt-2 space-y-1 font-mono text-xs">
+            <details className="history">
+              <summary>historique des {m.doses.length} prises</summary>
+              <ul>
                 {m.doses.map((d, i) => (
-                  <li
-                    key={d.takenAt}
-                    className="flex items-center justify-between gap-2 text-muted-foreground"
-                  >
+                  <li key={`${d.takenAt}-${i}`}>
                     <span>
-                      <span className="text-[var(--neon-cyan)]">
-                        #{i + 1}
-                      </span>{" "}
-                      · {new Date(d.takenAt).toLocaleTimeString("fr-FR")}
+                      <span className="n">#{i + 1}</span> ·{" "}
+                      {new Date(d.takenAt).toLocaleTimeString("fr-FR")}
                     </span>
-                    <span className="tabular-nums text-[var(--neon-pink)]">
+                    <span className="a">
                       +{formatDose(d.amount)} {MASS_LABEL[m.massUnit]}
                     </span>
                   </li>
@@ -1093,64 +1355,59 @@ function MeasurementRow({
               </ul>
             </details>
           )}
-
-          {/* Ajout d'une dose à cette mesure */}
-          <form
-            onSubmit={handleAddDose}
-            className="flex flex-col gap-2 border-t border-[var(--neon-purple)]/20 pt-4 sm:flex-row sm:items-center sm:gap-3"
-          >
-            <label className="sr-only" htmlFor={`add-dose-${m.id}`}>
-              Ajouter une dose à {m.name}
-            </label>
-            <div className="flex flex-1 items-stretch gap-2">
-              <Input
-                id={`add-dose-${m.id}`}
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="any"
-                value={extraDose}
-                onChange={(e) => {
-                  setExtraDose(e.target.value);
-                  if (doseError) setDoseError(null);
-                }}
-                placeholder={`+ dose en ${MASS_LABEL[m.massUnit]}`}
-                aria-invalid={doseError != null}
-                className="h-11 flex-1 border-[var(--neon-purple)]/40 bg-[oklch(0.08_0.04_295)/60%] font-mono text-sm text-[var(--neon-white)] placeholder:text-muted-foreground focus-visible:border-[var(--neon-purple)] focus-visible:ring-[var(--neon-purple)]/40"
-              />
-              <span className="inline-flex items-center rounded-md border border-[var(--neon-purple)]/30 bg-[oklch(0.08_0.04_295)/60%] px-3 font-mono text-xs uppercase tracking-widest text-[var(--neon-purple)]">
-                {MASS_LABEL[m.massUnit]}
-              </span>
-            </div>
-            <Button type="submit" variant="purple" size="default">
-              <ZapIcon /> Ajouter dose
-            </Button>
-            {doseError && (
-              <span
-                role="alert"
-                className="font-mono text-xs text-[oklch(0.85_0.20_25)]"
-              >
-                {doseError}
-              </span>
-            )}
-          </form>
         </div>
+
+        <form className="card-foot" onSubmit={handleAdd}>
+          <label className="sr-only" htmlFor={`add-dose-${m.id}`}>
+            Ajouter une dose à {m.name}
+          </label>
+          <input
+            id={`add-dose-${m.id}`}
+            className="tx"
+            type="number"
+            min="0"
+            step="any"
+            inputMode="decimal"
+            value={extra}
+            onChange={(e) => {
+              setExtra(e.target.value);
+              if (doseError) setDoseError(null);
+            }}
+            placeholder={`+ dose en ${MASS_LABEL[m.massUnit]}`}
+            aria-invalid={doseError != null}
+          />
+          <span className="unit-pill">{MASS_LABEL[m.massUnit]}</span>
+          <button type="submit" className="hl-btn primary sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+            Ajouter
+          </button>
+          {doseError && (
+            <span role="alert" style={{ color: "oklch(0.78 0.20 25)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+              {doseError}
+            </span>
+          )}
+        </form>
       </article>
     </li>
   );
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   FORMAT HELPERS
+   ────────────────────────────────────────────────────────────── */
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
-  if (h > 0) return `${h}h ${m.toString().padStart(2, "0")}m ${s.toString().padStart(2, "0")}s`;
+  if (h > 0)
+    return `${h}h ${m.toString().padStart(2, "0")}m ${s.toString().padStart(2, "0")}s`;
   if (m > 0) return `${m}m ${s.toString().padStart(2, "0")}s`;
   return `${s}s`;
 }
 
-/** Formate une dose en gardant une précision lisible quel que soit l'ordre de grandeur. */
 function formatDose(value: number): string {
   if (value === 0) return "0";
   const abs = Math.abs(value);
