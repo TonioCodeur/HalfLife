@@ -32,6 +32,17 @@ import {
   lookupMolecule,
   type MoleculeMeta,
 } from "./molecules";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 /* ──────────────────────────────────────────────────────────────────
    MATHJS — précision arbitraire pour la décroissance
@@ -721,13 +732,43 @@ export function HalflifeApp() {
               Lancer la mesure
             </button>
             {measurements.length > 0 && (
-              <button type="button" className="hl-btn ghost" onClick={clearAll}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                </svg>
-                Tout effacer
-              </button>
+              <AlertDialog>
+                <AlertDialogTrigger
+                  render={
+                    <button type="button" className="hl-btn ghost">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      </svg>
+                      Tout effacer
+                    </button>
+                  }
+                />
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Effacer toutes les mesures ?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Vous êtes sur le point de supprimer{" "}
+                      <strong>
+                        {measurements.length} mesure
+                        {measurements.length > 1 ? "s" : ""}
+                      </strong>{" "}
+                      en cours. Cette action est irréversible.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Annuler</AlertDialogCancel>
+                    <AlertDialogAction
+                      variant="destructive"
+                      onClick={clearAll}
+                    >
+                      Tout supprimer
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             )}
           </div>
         </form>
@@ -1267,17 +1308,53 @@ function MeasurementCard({
           </div>
 
           <div className="actions-h">
-            <button
-              type="button"
-              className="btn-icon"
-              onClick={() => onRemove(m.id)}
-              aria-label={`Supprimer la mesure de ${m.name}`}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            </button>
+            <AlertDialog>
+              <AlertDialogTrigger
+                render={
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    aria-label={`Supprimer la mesure de ${m.name}`}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                }
+              />
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Supprimer la mesure ?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Vous êtes sur le point de supprimer la mesure de{" "}
+                    <strong>{m.name}</strong>
+                    {m.doses.length > 1 ? (
+                      <>
+                        {" "}
+                        ({m.doses.length} prises, cumul{" "}
+                        {formatDose(
+                          m.doses.reduce((s, d) => s + d.amount, 0),
+                        )}{" "}
+                        {MASS_LABEL[m.massUnit]})
+                      </>
+                    ) : null}
+                    . Cette action est irréversible.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Annuler</AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    onClick={() => onRemove(m.id)}
+                  >
+                    Supprimer
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </header>
 
