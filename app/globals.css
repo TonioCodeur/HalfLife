@@ -956,7 +956,7 @@ details.history li .a {
 .notif-bar .txt b { color: var(--accent-bright); }
 
 /* ──────────────────────────────────────────────────────────────────
-   CONFIRMATION OVERLAY — fireworks cyberpunk
+   CONFIRMATION OVERLAY V2 — fireworks cyberpunk plein écran
    ────────────────────────────────────────────────────────────── */
 
 .confirm-overlay {
@@ -966,25 +966,164 @@ details.history li .a {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: oklch(0.06 0.03 280 / 0.88);
-  backdrop-filter: blur(6px);
+  background: oklch(0.05 0.03 280 / 0.92);
+  backdrop-filter: blur(8px) saturate(140%);
   cursor: pointer;
-  animation: confirm-overlay-in 0.18s ease;
+  overflow: hidden;
+  animation: confirm-overlay-in 0.22s ease;
+  isolation: isolate;
 }
 
 @keyframes confirm-overlay-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to   { opacity: 1; backdrop-filter: blur(8px) saturate(140%); }
 }
 
-/* ── Particules ── */
+/* ── 1. Halo radial pulsant ── */
+.fw-halo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 70vw;
+  height: 70vw;
+  max-width: 900px;
+  max-height: 900px;
+  transform: translate(-50%, -50%) scale(0.2);
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    color-mix(in oklch, var(--accent-bright), transparent 30%) 0%,
+    color-mix(in oklch, var(--accent), transparent 60%) 30%,
+    transparent 70%
+  );
+  filter: blur(40px);
+  animation: fw-halo-pulse 1.8s ease-out forwards;
+  opacity: 0;
+}
+.fw-halo-2 {
+  animation-delay: 0.4s;
+  animation-duration: 2.2s;
+  background: radial-gradient(
+    circle,
+    color-mix(in oklch, var(--pink), transparent 40%) 0%,
+    color-mix(in oklch, var(--cyan), transparent 70%) 35%,
+    transparent 70%
+  );
+}
+@keyframes fw-halo-pulse {
+  0%   { transform: translate(-50%, -50%) scale(0.2); opacity: 0; }
+  20%  { opacity: 0.85; }
+  60%  { transform: translate(-50%, -50%) scale(1.2); opacity: 0.55; }
+  100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+}
+
+/* ── 2. Ondes de choc plein écran ── */
+.fw-shockwaves {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.fw-shockwave {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: var(--sw-start, 3px) solid var(--sw-color, var(--accent-bright));
+  transform: translate(-50%, -50%) scale(0);
+  opacity: 0;
+  box-shadow:
+    0 0 20px var(--sw-color, var(--accent-bright)),
+    inset 0 0 20px color-mix(in oklch, var(--sw-color, var(--accent-bright)), transparent 60%);
+  animation: fw-shockwave var(--sw-dur, 1s) var(--sw-delay, 0ms) cubic-bezier(0.16, 0.84, 0.44, 1) forwards;
+}
+@keyframes fw-shockwave {
+  0%   {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 1;
+    border-width: var(--sw-start, 3px);
+  }
+  50%  { opacity: 0.6; }
+  100% {
+    transform: translate(-50%, -50%) scale(28);
+    opacity: 0;
+    border-width: 0.2px;
+  }
+}
+
+/* ── 3. Anneaux hexagonaux SVG ── */
+.fw-rings {
+  position: absolute;
+  width: min(900px, 95vw);
+  height: min(900px, 95vh);
+  pointer-events: none;
+}
+
+/* ── 4. Rayons radiaux SVG ── */
+.fw-rays {
+  position: absolute;
+  width: min(900px, 100vw);
+  height: min(900px, 100vh);
+  pointer-events: none;
+}
+
+/* ── 5. Bandes scanline plein écran ── */
+.fw-scan {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+}
+.fw-scan-h-1,
+.fw-scan-h-2 {
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cyan) 50%, transparent);
+  box-shadow: 0 0 20px var(--cyan), 0 0 40px color-mix(in oklch, var(--cyan), transparent 60%);
+}
+.fw-scan-h-1 {
+  animation: fw-scan-down 0.85s ease-in-out 0.05s forwards;
+}
+.fw-scan-h-2 {
+  background: linear-gradient(90deg, transparent, var(--pink) 50%, transparent);
+  box-shadow: 0 0 20px var(--pink), 0 0 40px color-mix(in oklch, var(--pink), transparent 60%);
+  animation: fw-scan-up 0.95s ease-in-out 0.45s forwards;
+}
+.fw-scan-v {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--accent-bright) 50%, transparent);
+  box-shadow: 0 0 20px var(--accent-bright), 0 0 40px color-mix(in oklch, var(--accent-bright), transparent 60%);
+  animation: fw-scan-right 0.85s ease-in-out 0.25s forwards;
+}
+@keyframes fw-scan-down {
+  0%   { top: -10px; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { top: 100vh; opacity: 0; }
+}
+@keyframes fw-scan-up {
+  0%   { top: 100vh; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { top: -10px; opacity: 0; }
+}
+@keyframes fw-scan-right {
+  0%   { left: -10px; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { left: 100vw; opacity: 0; }
+}
+
+/* ── 6. Particules ── */
 .fw-particles {
   position: absolute;
   inset: 0;
   pointer-events: none;
   overflow: hidden;
 }
-
 .fw-particle {
   position: absolute;
   top: 50%;
@@ -994,65 +1133,133 @@ details.history li .a {
   border-radius: 50%;
   background: var(--fw-color, var(--pink));
   box-shadow:
-    0 0 8px var(--fw-color, var(--pink)),
-    0 0 3px var(--fw-color, var(--pink));
+    0 0 12px var(--fw-color, var(--pink)),
+    0 0 24px var(--fw-color, var(--pink)),
+    0 0 4px var(--fw-color, var(--pink));
   transform: translate(-50%, -50%);
   animation:
-    fw-shoot var(--fw-dur, 600ms) var(--fw-delay, 0ms)
-    cubic-bezier(0.22, 0.8, 0.35, 1) forwards;
+    fw-shoot var(--fw-dur, 800ms) var(--fw-delay, 0ms)
+    cubic-bezier(0.16, 0.84, 0.44, 1) forwards;
 }
-
+.fw-particle-trail::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: var(--fw-color, var(--pink));
+  filter: blur(4px);
+  opacity: 0.6;
+}
 @keyframes fw-shoot {
   0%   {
-    transform: translate(-50%, -50%) scale(1.2);
+    transform: translate(-50%, -50%) scale(1.4);
     opacity: 1;
   }
-  60%  { opacity: 0.85; }
+  20%  { opacity: 1; }
+  60%  { opacity: 0.95; }
   100% {
     transform:
       translate(
         calc(-50% + var(--fw-tx)),
         calc(-50% + var(--fw-ty))
       )
-      scale(0.1);
+      scale(0.05);
     opacity: 0;
   }
 }
 
-/* ── Anneaux SVG ── */
-.fw-rings {
-  position: absolute;
-  width: min(440px, 90vw);
-  height: min(440px, 90vw);
-  pointer-events: none;
+.fw-sparks .fw-particle {
+  animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* ── Carte ── */
+/* ── 8. Carte centrale ── */
 .confirm-card {
   position: relative;
   z-index: 10;
   overflow: hidden;
-  background: color-mix(in oklch, var(--bg-deep) 92%, transparent);
+  background: color-mix(in oklch, var(--bg-deep) 94%, transparent);
   border: 1px solid var(--accent-bright);
   border-radius: var(--radius-md);
-  padding: 28px 40px 24px;
+  padding: 32px 44px 26px;
   text-align: center;
-  min-width: 260px;
-  max-width: 360px;
+  min-width: 280px;
+  max-width: 380px;
   box-shadow:
-    0 0 0 1px color-mix(in oklch, var(--accent), transparent 65%),
-    0 0 40px color-mix(in oklch, var(--accent), transparent 52%),
-    0 0 90px color-mix(in oklch, var(--accent), transparent 68%),
-    inset 0 0 32px color-mix(in oklch, var(--accent), transparent 90%);
-  animation: confirm-card-in 0.38s cubic-bezier(0.34, 1.56, 0.64, 1);
+    0 0 0 1px color-mix(in oklch, var(--accent-bright), transparent 50%),
+    0 0 50px color-mix(in oklch, var(--accent), transparent 40%),
+    0 0 110px color-mix(in oklch, var(--accent), transparent 60%),
+    0 0 180px color-mix(in oklch, var(--pink), transparent 70%),
+    inset 0 0 36px color-mix(in oklch, var(--accent), transparent 88%);
+  animation:
+    confirm-card-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
+    confirm-card-glitch 1.8s steps(1, end) 0.3s;
 }
-
 @keyframes confirm-card-in {
-  from { transform: scale(0.6); opacity: 0; }
-  to   { transform: scale(1);   opacity: 1; }
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.06); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes confirm-card-glitch {
+  0%, 100%       { transform: translate(0); }
+  6%             { transform: translate(-2px, 1px); }
+  8%             { transform: translate(2px, -1px); }
+  10%            { transform: translate(0); }
+  18%            { transform: translate(1px, 0); }
+  20%            { transform: translate(0); }
+  62%            { transform: translate(-1px, -1px); }
+  64%            { transform: translate(0); }
 }
 
-/* Scanline sweep */
+/* Glitch RGB layers (faux décalage chromatique) */
+.confirm-glitch {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  mix-blend-mode: screen;
+  opacity: 0;
+}
+.confirm-glitch-r {
+  box-shadow: inset 0 0 0 2px var(--pink);
+  animation: confirm-glitch-r 0.4s ease 0.1s 2 forwards;
+}
+.confirm-glitch-c {
+  box-shadow: inset 0 0 0 2px var(--cyan);
+  animation: confirm-glitch-c 0.4s ease 0.18s 2 forwards;
+}
+@keyframes confirm-glitch-r {
+  0%   { transform: translate(0); opacity: 0; }
+  20%  { transform: translate(-3px, 1px); opacity: 0.8; }
+  100% { transform: translate(0); opacity: 0; }
+}
+@keyframes confirm-glitch-c {
+  0%   { transform: translate(0); opacity: 0; }
+  20%  { transform: translate(3px, -1px); opacity: 0.8; }
+  100% { transform: translate(0); opacity: 0; }
+}
+
+/* Coins HUD */
+.confirm-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: var(--cyan);
+  border-style: solid;
+  border-width: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px var(--cyan));
+  animation: confirm-corner-in 0.5s ease-out 0.2s backwards;
+}
+.confirm-corner.tl { top: 6px;    left: 6px;    border-top-width: 2px;    border-left-width: 2px; }
+.confirm-corner.tr { top: 6px;    right: 6px;   border-top-width: 2px;    border-right-width: 2px; }
+.confirm-corner.bl { bottom: 6px; left: 6px;    border-bottom-width: 2px; border-left-width: 2px; }
+.confirm-corner.br { bottom: 6px; right: 6px;   border-bottom-width: 2px; border-right-width: 2px; }
+@keyframes confirm-corner-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Scanline sweep interne (sur la card) */
 .confirm-scanline {
   position: absolute;
   top: 0;
@@ -1060,10 +1267,10 @@ details.history li .a {
   width: 100%;
   height: 3px;
   background: linear-gradient(90deg, transparent, var(--cyan) 50%, transparent);
+  box-shadow: 0 0 12px var(--cyan);
   opacity: 0;
-  animation: confirm-scan 0.55s ease-out 0.08s forwards;
+  animation: confirm-scan 0.7s ease-out 0.12s forwards;
 }
-
 @keyframes confirm-scan {
   0%   { top: 0;    opacity: 1; }
   100% { top: 100%; opacity: 0; }
@@ -1072,31 +1279,53 @@ details.history li .a {
 /* Tag */
 .confirm-tag {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.34em;
   text-transform: uppercase;
   color: var(--pink);
   margin-bottom: 14px;
+  text-shadow: 0 0 10px var(--pink);
+  animation: confirm-tag-in 0.5s ease 0.18s backwards;
+}
+@keyframes confirm-tag-in {
+  from { opacity: 0; letter-spacing: 0.6em; }
+  to   { opacity: 1; letter-spacing: 0.34em; }
 }
 
 /* Molecule icon */
 .confirm-mol-icon {
-  width: 68px;
-  height: 68px;
+  width: 72px;
+  height: 72px;
   margin: 0 auto 12px;
   color: var(--accent-bright);
-  filter: drop-shadow(0 0 14px color-mix(in oklch, var(--accent), transparent 48%));
+  filter:
+    drop-shadow(0 0 14px color-mix(in oklch, var(--accent), transparent 40%))
+    drop-shadow(0 0 24px color-mix(in oklch, var(--accent), transparent 60%));
+  animation: confirm-mol-in 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) 0.22s backwards;
+}
+@keyframes confirm-mol-in {
+  0%   { opacity: 0; transform: scale(0.3) rotate(-90deg); }
+  60%  { opacity: 1; transform: scale(1.1) rotate(10deg); }
+  100% { transform: scale(1) rotate(0); }
 }
 
 /* Molecule name */
 .confirm-name {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 20px;
+  font-size: 22px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg);
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  text-shadow:
+    0 0 12px color-mix(in oklch, var(--accent), transparent 40%),
+    0 0 24px color-mix(in oklch, var(--accent), transparent 70%);
+  animation: confirm-name-in 0.55s ease 0.3s backwards;
+}
+@keyframes confirm-name-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Dose */
@@ -1105,22 +1334,38 @@ details.history li .a {
   align-items: baseline;
   justify-content: center;
   gap: 6px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
+  animation: confirm-name-in 0.55s ease 0.4s backwards;
 }
 .confirm-dose .v {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 40px;
+  font-size: 44px;
   letter-spacing: -0.02em;
   color: var(--accent-bright);
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  text-shadow:
+    0 0 16px var(--accent-bright),
+    0 0 32px color-mix(in oklch, var(--accent), transparent 50%);
 }
 .confirm-dose .u {
   font-family: var(--font-mono);
-  font-size: 17px;
+  font-size: 18px;
   color: var(--fg-mute);
   font-weight: 500;
+}
+
+/* Meta */
+.confirm-meta {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--cyan);
+  margin-bottom: 14px;
+  opacity: 0.85;
+  animation: confirm-name-in 0.5s ease 0.5s backwards;
 }
 
 /* Hint */
@@ -1131,6 +1376,117 @@ details.history li .a {
   text-transform: uppercase;
   color: var(--fg-mute);
   opacity: 0.5;
+  animation: confirm-name-in 0.5s ease 0.6s backwards;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   SONNER TOAST CYBERPUNK
+   ────────────────────────────────────────────────────────────── */
+.hl-toaster {
+  font-family: var(--font-mono) !important;
+}
+
+.hl-toast {
+  background: color-mix(in oklch, var(--bg-deep) 92%, transparent) !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-sm) !important;
+  backdrop-filter: blur(8px);
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--accent), transparent 80%),
+    0 0 20px color-mix(in oklch, var(--accent), transparent 70%),
+    0 8px 24px oklch(0 0 0 / 0.5) !important;
+  padding: 12px 14px !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.hl-toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-bright);
+}
+
+.hl-toast[data-type="success"] {
+  border-color: color-mix(in oklch, var(--accent-bright), transparent 50%) !important;
+}
+.hl-toast[data-type="success"]::before {
+  background: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-bright);
+}
+.hl-toast[data-type="success"] [data-icon] {
+  color: var(--accent-bright);
+  filter: drop-shadow(0 0 6px var(--accent-bright));
+}
+
+.hl-toast[data-type="info"] {
+  border-color: color-mix(in oklch, var(--cyan), transparent 50%) !important;
+}
+.hl-toast[data-type="info"]::before {
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+}
+.hl-toast[data-type="info"] [data-icon] {
+  color: var(--cyan);
+  filter: drop-shadow(0 0 6px var(--cyan));
+}
+
+.hl-toast[data-type="warning"] {
+  border-color: color-mix(in oklch, var(--warn), transparent 50%) !important;
+}
+.hl-toast[data-type="warning"]::before {
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+}
+.hl-toast[data-type="warning"] [data-icon] {
+  color: var(--warn);
+  filter: drop-shadow(0 0 6px var(--warn));
+}
+
+.hl-toast[data-type="error"] {
+  border-color: color-mix(in oklch, var(--pink), transparent 50%) !important;
+}
+.hl-toast[data-type="error"]::before {
+  background: var(--pink);
+  box-shadow: 0 0 8px var(--pink);
+}
+.hl-toast[data-type="error"] [data-icon] {
+  color: var(--pink);
+  filter: drop-shadow(0 0 6px var(--pink));
+}
+
+.hl-toast-title {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: var(--fg) !important;
+}
+
+.hl-toast-desc {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  color: var(--fg-dim) !important;
+  letter-spacing: 0.02em !important;
+  margin-top: 3px !important;
+}
+
+.hl-toast-close {
+  background: transparent !important;
+  color: var(--fg-mute) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-sm) !important;
+}
+.hl-toast-close:hover {
+  color: var(--accent-bright) !important;
+  border-color: var(--accent) !important;
+  background: var(--accent-fog) !important;
 }
 
 /* RESPONSIVE */

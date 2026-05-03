@@ -25,6 +25,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { toast } from "sonner";
 
 import {
   MoleculeIcon,
@@ -87,20 +88,63 @@ type Measurement = {
 const ELIMINATION_THRESHOLD = math.bignumber("1e-6");
 
 /* ──────────────────────────────────────────────────────────────────
-   FIREWORKS — données pré-calculées (déterministes, pas de random)
+   FIREWORKS V2 — animation cyberpunk plein écran
+   Tout est pré-calculé (pas de Math.random côté composant) pour rester
+   SSR-safe et déterministe.
    ────────────────────────────────────────────────────────────── */
-const FW_PARTICLES = Array.from({ length: 28 }, (_, i) => {
-  const angle = (i / 28) * Math.PI * 2;
-  const r = 120 + (i % 4) * 26; // 120 / 146 / 172 / 198 px
+
+const FW_COLORS = [
+  "var(--pink)",
+  "var(--cyan)",
+  "var(--accent-bright)",
+  "var(--accent)",
+  "oklch(0.95 0.05 290)", // bright glitch white
+] as const;
+
+/* 70 particules — explosion principale, 4 anneaux radiaux */
+const FW_PARTICLES = Array.from({ length: 70 }, (_, i) => {
+  const angle = (i / 70) * Math.PI * 2 + ((i % 5) * 0.18);
+  // 4 ondes : 280px / 380px / 500px / 640px
+  const ringR = [280, 380, 500, 640][i % 4];
+  return {
+    tx: parseFloat((Math.cos(angle) * ringR).toFixed(2)),
+    ty: parseFloat((Math.sin(angle) * ringR).toFixed(2)),
+    color: FW_COLORS[i % FW_COLORS.length],
+    dur: 700 + (i % 7) * 100,        // 700 → 1300 ms
+    delay: (i % 14) * 22,             // 0 → 286 ms stagger
+    size: 2 + (i % 5) * 1.4,          // 2 → 7.6 px
+  };
+});
+
+/* 24 micro-étincelles — 2e vague (1s après) */
+const FW_SPARKS = Array.from({ length: 24 }, (_, i) => {
+  const angle = (i / 24) * Math.PI * 2;
+  const r = 160 + (i % 3) * 60;
   return {
     tx: parseFloat((Math.cos(angle) * r).toFixed(2)),
     ty: parseFloat((Math.sin(angle) * r).toFixed(2)),
-    color: (["var(--pink)", "var(--cyan)", "var(--accent-bright)", "var(--pink)"] as const)[i % 4],
-    dur: 480 + (i % 6) * 80,   // 480 → 880 ms
-    delay: i * 18,               // 0 → 486 ms stagger
-    size: 2.5 + (i % 3) * 1.5,  // 2.5 / 4 / 5.5 px
+    color: FW_COLORS[(i + 1) % FW_COLORS.length],
+    dur: 600 + (i % 4) * 80,
+    delay: 950 + (i * 15),            // démarrage seconde vague
+    size: 1.5 + (i % 3) * 1.1,
   };
 });
+
+/* 16 rayons radiaux (lignes du centre vers les bords) */
+const FW_RAYS = Array.from({ length: 16 }, (_, i) => {
+  const angle = (i / 16) * 360;
+  return { angle, delay: 40 + (i % 4) * 30, color: FW_COLORS[i % 3] };
+});
+
+/* 6 anneaux concentriques (ondes de choc) */
+const FW_SHOCKWAVES = [
+  { delay: 0,    dur: 0.95, color: "var(--pink)",          start: 4 },
+  { delay: 90,   dur: 1.05, color: "var(--cyan)",          start: 4 },
+  { delay: 180,  dur: 1.15, color: "var(--accent-bright)", start: 3 },
+  { delay: 320,  dur: 1.05, color: "var(--pink)",          start: 2 },
+  { delay: 480,  dur: 0.95, color: "var(--cyan)",          start: 2 },
+  { delay: 640,  dur: 0.85, color: "var(--accent-bright)", start: 1 },
+] as const;
 
 function hexPath(r: number): string {
   const pts = Array.from({ length: 6 }, (_, i) => {
@@ -226,8 +270,8 @@ function notifyHalfLife(
 ) {
   if (!canNotify()) return;
   const plural = bucket > 1 ? "s" : "";
-  new Notification(`⌬ Halflife · ${m.name}`, {
-    body: `${bucket} demi-vie${plural} écoulée${plural} depuis la dernière dose · ${formatDose(remainingDose)} ${MASS_LABEL[m.massUnit]} restants (${pct.toFixed(1)} %)`,
+  new Notification(`⌬ ${m.name} · ${bucket} demi-vie${plural} écoulée${plural}`, {
+    body: `Taux sanguin actuel : ${pct.toFixed(1)} %\nQuantité restante : ${formatDose(remainingDose)} ${MASS_LABEL[m.massUnit]}`,
     tag: `halflife-${m.id}-${bucket}`,
     icon: "/favicon.ico",
   });
@@ -235,8 +279,8 @@ function notifyHalfLife(
 
 function notifyEliminated(m: Measurement) {
   if (!canNotify()) return;
-  new Notification(`✗ Halflife · Élimination terminée`, {
-    body: `${m.name} a été entièrement éliminée du sang.`,
+  new Notification(`✗ ${m.name} · Élimination complète`, {
+    body: `${m.name} a entièrement quitté l'organisme.\nTaux sanguin : 0 %.`,
     tag: `eliminated-${m.id}`,
     icon: "/favicon.ico",
     requireInteraction: true,
@@ -516,15 +560,28 @@ export function HalflifeApp() {
     setHalfLife("");
     setDose("");
     setConfirmation({ name: trimmed, dose: doseValue, massUnit, kind: "new" });
+    toast.success(`Mesure initiée · ${trimmed}`, {
+      description: `${formatDose(doseValue)} ${MASS_LABEL[massUnit]} · t½ = ${halfValue} ${UNIT_LABEL[unit]}`,
+    });
   }
 
   function remove(id: string) {
+    const target = measurements.find((m) => m.id === id);
     notificationStateRef.current.delete(id);
     setMeasurements((prev) => prev.filter((m) => m.id !== id));
+    if (target) {
+      toast.info(`Mesure supprimée · ${target.name}`, {
+        description: `${target.doses.length} prise${target.doses.length > 1 ? "s" : ""} effacée${target.doses.length > 1 ? "s" : ""}`,
+      });
+    }
   }
   function clearAll() {
+    const count = measurements.length;
     notificationStateRef.current.clear();
     setMeasurements([]);
+    toast.warning(`Toutes les mesures effacées`, {
+      description: `${count} mesure${count > 1 ? "s" : ""} supprimée${count > 1 ? "s" : ""}.`,
+    });
   }
   function addDose(id: string, amount: number) {
     notificationStateRef.current.set(id, {
@@ -542,6 +599,9 @@ export function HalflifeApp() {
     );
     if (target) {
       setConfirmation({ name: target.name, dose: amount, massUnit: target.massUnit, kind: "dose" });
+      toast.success(`Dose administrée · ${target.name}`, {
+        description: `+${formatDose(amount)} ${MASS_LABEL[target.massUnit]} · taux sanguin réinitialisé`,
+      });
     }
   }
   function applySuggestion(meta: MoleculeMeta) {
@@ -1065,7 +1125,17 @@ function EmptyState() {
 }
 
 /* ──────────────────────────────────────────────────────────────────
-   CONFIRMATION OVERLAY — animation cyberpunk "fireworks"
+   CONFIRMATION OVERLAY V2 — fullscreen cyberpunk fireworks
+   Couches superposées (z-index croissant) :
+     0. Backdrop sombre + blur
+     1. Halo radial central (radial-gradient pulsant)
+     2. Ondes de choc concentriques (6 cercles qui scalent à fond)
+     3. Anneaux hexagonaux rotatifs SVG
+     4. Rayons radiaux SVG (16 lignes étoile)
+     5. Bandes scanline horizontales/verticales qui balayent l'écran
+     6. Particules principales (70 dots avec trail)
+     7. Étincelles seconde vague (24 dots, +950 ms)
+     8. Carte centrale (glitch + scanline + spring-in)
    ────────────────────────────────────────────────────────────── */
 function ConfirmationOverlay({
   payload,
@@ -1074,19 +1144,20 @@ function ConfirmationOverlay({
   payload: ConfirmationPayload;
   onDismiss: () => void;
 }) {
-  /* Ref pour éviter que le tick 1Hz ne réinitialise le timer */
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
 
   useEffect(() => {
-    const t = setTimeout(() => { dismissRef.current(); }, 2600);
+    const t = setTimeout(() => { dismissRef.current(); }, 3600);
     return () => clearTimeout(t);
   }, []);
 
   const HEX_RINGS = [
-    { color: "var(--pink)",          delay: 0,    dur: 0.65 },
-    { color: "var(--cyan)",          delay: 0.12, dur: 0.82 },
-    { color: "var(--accent-bright)", delay: 0.24, dur: 0.98 },
+    { color: "var(--pink)",          delay: 0,    dur: 0.85, rot: 0   },
+    { color: "var(--cyan)",          delay: 0.12, dur: 1.05, rot: 30  },
+    { color: "var(--accent-bright)", delay: 0.26, dur: 1.25, rot: 60  },
+    { color: "var(--pink)",          delay: 0.42, dur: 1.35, rot: 90  },
+    { color: "var(--cyan)",          delay: 0.62, dur: 1.45, rot: 120 },
   ] as const;
 
   return (
@@ -1101,9 +1172,118 @@ function ConfirmationOverlay({
           : `Dose ajoutée : ${formatDose(payload.dose)} ${MASS_LABEL[payload.massUnit]} de ${payload.name}`
       }
     >
-      {/* ── Particules CSS ── */}
+      {/* ── 1. Halo central pulsant ── */}
+      <div className="fw-halo" aria-hidden="true" />
+      <div className="fw-halo fw-halo-2" aria-hidden="true" />
+
+      {/* ── 2. Ondes de choc (cercles plein écran) ── */}
+      <div className="fw-shockwaves" aria-hidden="true">
+        {FW_SHOCKWAVES.map((sw, i) => (
+          <div
+            key={i}
+            className="fw-shockwave"
+            style={{
+              "--sw-color": sw.color,
+              "--sw-delay": `${sw.delay}ms`,
+              "--sw-dur": `${sw.dur}s`,
+              "--sw-start": `${sw.start}px`,
+            } as React.CSSProperties}
+          />
+        ))}
+      </div>
+
+      {/* ── 3. Anneaux hexagonaux SVG ── */}
+      <svg className="fw-rings" viewBox="-300 -300 600 600" aria-hidden="true">
+        {HEX_RINGS.map((ring, i) => (
+          <g key={i} transform={`rotate(${ring.rot})`}>
+            <path d={hexPath(60)} fill="none" stroke={ring.color} strokeWidth="2.5">
+              <animateTransform
+                attributeName="transform"
+                type="scale"
+                from="0.1"
+                to="6"
+                begin={`${ring.delay}s`}
+                dur={`${ring.dur}s`}
+                fill="freeze"
+              />
+              <animate
+                attributeName="opacity"
+                values="0.95;0"
+                begin={`${ring.delay}s`}
+                dur={`${ring.dur}s`}
+                fill="freeze"
+              />
+              <animate
+                attributeName="stroke-width"
+                values="3;0.4"
+                begin={`${ring.delay}s`}
+                dur={`${ring.dur}s`}
+                fill="freeze"
+              />
+            </path>
+          </g>
+        ))}
+      </svg>
+
+      {/* ── 4. Rayons radiaux ── */}
+      <svg className="fw-rays" viewBox="-300 -300 600 600" aria-hidden="true">
+        {FW_RAYS.map((ray, i) => (
+          <g key={i} transform={`rotate(${ray.angle})`}>
+            <line
+              x1="0"
+              y1="0"
+              x2="0"
+              y2="-360"
+              stroke={ray.color}
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              opacity="0"
+            >
+              <animate
+                attributeName="opacity"
+                values="0;0.85;0"
+                begin={`${ray.delay}ms`}
+                dur="0.8s"
+                fill="freeze"
+              />
+              <animate
+                attributeName="stroke-width"
+                values="3;0.3"
+                begin={`${ray.delay}ms`}
+                dur="0.8s"
+                fill="freeze"
+              />
+            </line>
+          </g>
+        ))}
+      </svg>
+
+      {/* ── 5. Bandes scanline plein écran ── */}
+      <div className="fw-scan fw-scan-h-1" aria-hidden="true" />
+      <div className="fw-scan fw-scan-h-2" aria-hidden="true" />
+      <div className="fw-scan fw-scan-v" aria-hidden="true" />
+
+      {/* ── 6. Particules principales (70) ── */}
       <div className="fw-particles" aria-hidden="true">
         {FW_PARTICLES.map((p, i) => (
+          <div
+            key={i}
+            className="fw-particle fw-particle-trail"
+            style={{
+              "--fw-tx": `${p.tx}px`,
+              "--fw-ty": `${p.ty}px`,
+              "--fw-color": p.color,
+              "--fw-delay": `${p.delay}ms`,
+              "--fw-dur": `${p.dur}ms`,
+              "--fw-size": `${p.size}px`,
+            } as React.CSSProperties}
+          />
+        ))}
+      </div>
+
+      {/* ── 7. Étincelles seconde vague (24) ── */}
+      <div className="fw-particles fw-sparks" aria-hidden="true">
+        {FW_SPARKS.map((p, i) => (
           <div
             key={i}
             className="fw-particle"
@@ -1119,41 +1299,20 @@ function ConfirmationOverlay({
         ))}
       </div>
 
-      {/* ── Anneaux hexagonaux SVG SMIL ── */}
-      <svg className="fw-rings" viewBox="-220 -220 440 440" aria-hidden="true">
-        {HEX_RINGS.map((ring, i) => (
-          <path key={i} d={hexPath(60)} fill="none" stroke={ring.color} strokeWidth="2">
-            <animateTransform
-              attributeName="transform"
-              type="scale"
-              from="0.1"
-              to="3.4"
-              begin={`${ring.delay}s`}
-              dur={`${ring.dur}s`}
-              fill="freeze"
-            />
-            <animate
-              attributeName="opacity"
-              values="1;0"
-              begin={`${ring.delay}s`}
-              dur={`${ring.dur}s`}
-              fill="freeze"
-            />
-            <animate
-              attributeName="stroke-width"
-              values="2;0.3"
-              begin={`${ring.delay}s`}
-              dur={`${ring.dur}s`}
-              fill="freeze"
-            />
-          </path>
-        ))}
-      </svg>
-
-      {/* ── Carte de confirmation ── */}
+      {/* ── 8. Carte centrale ── */}
       <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
-        {/* Scanline sweep */}
+        {/* Glitch RGB layers (faux décalage chromatique) */}
+        <div className="confirm-glitch confirm-glitch-r" aria-hidden="true" />
+        <div className="confirm-glitch confirm-glitch-c" aria-hidden="true" />
+
+        {/* Scanline interne qui balaye la card */}
         <div className="confirm-scanline" aria-hidden="true" />
+
+        {/* Coins déco type HUD */}
+        <div className="confirm-corner tl" aria-hidden="true" />
+        <div className="confirm-corner tr" aria-hidden="true" />
+        <div className="confirm-corner bl" aria-hidden="true" />
+        <div className="confirm-corner br" aria-hidden="true" />
 
         <div className="confirm-tag">
           {payload.kind === "new" ? "⬢ mesure initiée" : "⚡ dose administrée"}
@@ -1168,6 +1327,12 @@ function ConfirmationOverlay({
         <div className="confirm-dose">
           <span className="v">{formatDose(payload.dose)}</span>
           <span className="u">{MASS_LABEL[payload.massUnit]}</span>
+        </div>
+
+        <div className="confirm-meta">
+          {payload.kind === "new"
+            ? "système · décroissance lancée"
+            : "système · taux sanguin réinitialisé"}
         </div>
 
         <div className="confirm-hint">↵ cliquer pour fermer</div>

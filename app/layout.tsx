@@ -5,6 +5,7 @@ import {
   Space_Grotesk,
 } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
 const interTight = Inter_Tight({
@@ -45,6 +46,7 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <TooltipProvider>{children}</TooltipProvider>
+        <Toaster />
         {/* Art ASCII (décoratif, expression JS → pas de règle
             react/no-unescaped-entities qui s'applique). */}
         <pre
