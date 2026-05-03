@@ -67,6 +67,13 @@ const MASS_LABEL: Record<MassUnit, string> = {
   g: "g",
 };
 
+type ConfirmationPayload = {
+  name: string;
+  dose: number;
+  massUnit: MassUnit;
+  kind: "new" | "dose";
+};
+
 type Dose = { amount: number; takenAt: number };
 type Measurement = {
   id: string;
@@ -78,6 +85,30 @@ type Measurement = {
 };
 
 const ELIMINATION_THRESHOLD = math.bignumber("1e-6");
+
+/* ──────────────────────────────────────────────────────────────────
+   FIREWORKS — données pré-calculées (déterministes, pas de random)
+   ────────────────────────────────────────────────────────────── */
+const FW_PARTICLES = Array.from({ length: 28 }, (_, i) => {
+  const angle = (i / 28) * Math.PI * 2;
+  const r = 120 + (i % 4) * 26; // 120 / 146 / 172 / 198 px
+  return {
+    tx: parseFloat((Math.cos(angle) * r).toFixed(2)),
+    ty: parseFloat((Math.sin(angle) * r).toFixed(2)),
+    color: (["var(--pink)", "var(--cyan)", "var(--accent-bright)", "var(--pink)"] as const)[i % 4],
+    dur: 480 + (i % 6) * 80,   // 480 → 880 ms
+    delay: i * 18,               // 0 → 486 ms stagger
+    size: 2.5 + (i % 3) * 1.5,  // 2.5 / 4 / 5.5 px
+  };
+});
+
+function hexPath(r: number): string {
+  const pts = Array.from({ length: 6 }, (_, i) => {
+    const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+    return `${(Math.cos(a) * r).toFixed(1)},${(Math.sin(a) * r).toFixed(1)}`;
+  });
+  return `M ${pts.join(" L ")} Z`;
+}
 
 /* ──────────────────────────────────────────────────────────────────
    STORAGE
@@ -259,6 +290,9 @@ export function HalflifeApp() {
   const [dose, setDose] = useState("");
   const [massUnit, setMassUnit] = useState<MassUnit>("mg");
   const [error, setError] = useState<string | null>(null);
+
+  /* ── Confirmation overlay ── */
+  const [confirmation, setConfirmation] = useState<ConfirmationPayload | null>(null);
 
   /* ── Persisted state ── */
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
@@ -481,6 +515,7 @@ export function HalflifeApp() {
     setName("");
     setHalfLife("");
     setDose("");
+    setConfirmation({ name: trimmed, dose: doseValue, massUnit, kind: "new" });
   }
 
   function remove(id: string) {
@@ -496,6 +531,8 @@ export function HalflifeApp() {
       lastWholeBucket: 0,
       eliminationNotified: false,
     });
+    // Capture before setState for the confirmation payload
+    const target = measurements.find((m) => m.id === id);
     setMeasurements((prev) =>
       prev.map((m) =>
         m.id === id
@@ -503,6 +540,9 @@ export function HalflifeApp() {
           : m,
       ),
     );
+    if (target) {
+      setConfirmation({ name: target.name, dose: amount, massUnit: target.massUnit, kind: "dose" });
+    }
   }
   function applySuggestion(meta: MoleculeMeta) {
     setName(meta.name);
@@ -934,6 +974,14 @@ export function HalflifeApp() {
           </DndContext>
         )}
       </main>
+
+      {/* ── CONFIRMATION OVERLAY ─────────────────────────────── */}
+      {confirmation && (
+        <ConfirmationOverlay
+          payload={confirmation}
+          onDismiss={() => setConfirmation(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1012,6 +1060,118 @@ function EmptyState() {
       <p style={{ marginTop: 4, color: "var(--fg-mute)", fontSize: 10 }}>
         {"// system idle · awaiting input"}
       </p>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   CONFIRMATION OVERLAY — animation cyberpunk "fireworks"
+   ────────────────────────────────────────────────────────────── */
+function ConfirmationOverlay({
+  payload,
+  onDismiss,
+}: {
+  payload: ConfirmationPayload;
+  onDismiss: () => void;
+}) {
+  /* Ref pour éviter que le tick 1Hz ne réinitialise le timer */
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+
+  useEffect(() => {
+    const t = setTimeout(() => { dismissRef.current(); }, 2600);
+    return () => clearTimeout(t);
+  }, []);
+
+  const HEX_RINGS = [
+    { color: "var(--pink)",          delay: 0,    dur: 0.65 },
+    { color: "var(--cyan)",          delay: 0.12, dur: 0.82 },
+    { color: "var(--accent-bright)", delay: 0.24, dur: 0.98 },
+  ] as const;
+
+  return (
+    <div
+      className="confirm-overlay"
+      onClick={onDismiss}
+      role="status"
+      aria-live="assertive"
+      aria-label={
+        payload.kind === "new"
+          ? `Mesure initiée : ${payload.name}, ${formatDose(payload.dose)} ${MASS_LABEL[payload.massUnit]}`
+          : `Dose ajoutée : ${formatDose(payload.dose)} ${MASS_LABEL[payload.massUnit]} de ${payload.name}`
+      }
+    >
+      {/* ── Particules CSS ── */}
+      <div className="fw-particles" aria-hidden="true">
+        {FW_PARTICLES.map((p, i) => (
+          <div
+            key={i}
+            className="fw-particle"
+            style={{
+              "--fw-tx": `${p.tx}px`,
+              "--fw-ty": `${p.ty}px`,
+              "--fw-color": p.color,
+              "--fw-delay": `${p.delay}ms`,
+              "--fw-dur": `${p.dur}ms`,
+              "--fw-size": `${p.size}px`,
+            } as React.CSSProperties}
+          />
+        ))}
+      </div>
+
+      {/* ── Anneaux hexagonaux SVG SMIL ── */}
+      <svg className="fw-rings" viewBox="-220 -220 440 440" aria-hidden="true">
+        {HEX_RINGS.map((ring, i) => (
+          <path key={i} d={hexPath(60)} fill="none" stroke={ring.color} strokeWidth="2">
+            <animateTransform
+              attributeName="transform"
+              type="scale"
+              from="0.1"
+              to="3.4"
+              begin={`${ring.delay}s`}
+              dur={`${ring.dur}s`}
+              fill="freeze"
+            />
+            <animate
+              attributeName="opacity"
+              values="1;0"
+              begin={`${ring.delay}s`}
+              dur={`${ring.dur}s`}
+              fill="freeze"
+            />
+            <animate
+              attributeName="stroke-width"
+              values="2;0.3"
+              begin={`${ring.delay}s`}
+              dur={`${ring.dur}s`}
+              fill="freeze"
+            />
+          </path>
+        ))}
+      </svg>
+
+      {/* ── Carte de confirmation ── */}
+      <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
+        {/* Scanline sweep */}
+        <div className="confirm-scanline" aria-hidden="true" />
+
+        <div className="confirm-tag">
+          {payload.kind === "new" ? "⬢ mesure initiée" : "⚡ dose administrée"}
+        </div>
+
+        <div className="confirm-mol-icon">
+          <MoleculeIcon name={payload.name} />
+        </div>
+
+        <div className="confirm-name">{payload.name}</div>
+
+        <div className="confirm-dose">
+          <span className="v">{formatDose(payload.dose)}</span>
+          <span className="u">{MASS_LABEL[payload.massUnit]}</span>
+        </div>
+
+        <div className="confirm-hint">↵ cliquer pour fermer</div>
+      </div>
     </div>
   );
 }
